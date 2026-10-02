@@ -9,9 +9,9 @@
 
 window.FRIMOR_CONFIG = {
   // Dans Supabase : Project Settings → API
-  SUPABASE_URL: "https://xxxxxxxxxxxx.supabase.co",
-  SUPABASE_ANON_KEY: "colle-ici-ta-cle-anon-public",
+  SUPABASE_URL: "https://jdoedspfkmpjexvbnqlc.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_fxalkHtssqFXBJPol-qSjw_QUmDiQHQ",
 
   // Dans OneSignal : Settings → Keys & IDs
-  ONESIGNAL_APP_ID: "colle-ici-ton-app-id-onesignal"
+  ONESIGNAL_APP_ID: "dcf91ee2-1d86-41a3-8ec9-da43ed5286ca"
 };
