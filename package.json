@@ -1,0 +1,9 @@
+{
+  "name": "frimor-task",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frimor Task — tâches répétitives, planning et rappels pour Frimor",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4"
+  }
+}
