@@ -116,6 +116,7 @@ async function runScheduling() {
 
   let scheduled = 0, skipped = 0;
   const errors = [];
+  const details = []; // debug temporaire : infos OneSignal par notification créée
 
   for (const ymd of [todayYMD, tomorrowYMD]) {
     const ds = ymdToDs(ymd);
@@ -135,16 +136,17 @@ async function runScheduling() {
         const already = await supabaseGet('scheduled_notifications?select=id&id=eq.' + encodeURIComponent(id));
         if (already.length > 0) { skipped++; continue; }
 
-        await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt);
+        const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt);
         await supabaseInsert('scheduled_notifications', { id, task_id: task.id, date: ds });
         scheduled++;
+        details.push({ task: task.title, date: ds, sendAt: sendAt.toISOString(), oneSignalId: osResult.id, recipients: osResult.recipients, errorsFromOS: osResult.errors });
       } catch (e) {
         errors.push({ task: task.title, date: ds, error: String(e.message || e) });
       }
     }
   }
 
-  return { ok: true, scheduled, skipped, errors, ranAt: now.toISOString() };
+  return { ok: true, scheduled, skipped, errors, details, ranAt: now.toISOString() };
 }
 
 module.exports = { runScheduling };
