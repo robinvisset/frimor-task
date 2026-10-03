@@ -80,7 +80,18 @@ async function supabaseInsert(table, row) {
   }
 }
 
-async function oneSignalSchedule(title, body, sendAfterUtc) {
+// Récupère directement la liste des appareils enregistrés (au lieu de
+// viser le groupe "Subscribed Users", qui classait mal les appareils iPhone
+// et bloquait l'envoi avec l'erreur "All included players are not subscribed").
+async function getPlayerIds() {
+  const res = await fetch('https://onesignal.com/api/v1/players?app_id=' + ONESIGNAL_APP_ID + '&limit=300', {
+    headers: { Authorization: 'Basic ' + ONESIGNAL_REST_API_KEY }
+  });
+  const data = await res.json().catch(() => ({}));
+  return (data.players || []).filter(function (p) { return !p.invalid_identifier; }).map(function (p) { return p.id; });
+}
+
+async function oneSignalSchedule(title, body, sendAfterUtc, playerIds) {
   const res = await fetch('https://onesignal.com/api/v1/notifications', {
     method: 'POST',
     headers: {
@@ -91,7 +102,7 @@ async function oneSignalSchedule(title, body, sendAfterUtc) {
       app_id: ONESIGNAL_APP_ID,
       headings: { en: title, fr: title },
       contents: { en: body, fr: body },
-      included_segments: ['Subscribed Users'],
+      include_player_ids: playerIds,
       send_after: sendAfterUtc.toUTCString()
     })
   });
@@ -107,6 +118,11 @@ async function oneSignalSchedule(title, body, sendAfterUtc) {
 async function runScheduling() {
   if (!SUPABASE_URL || !SUPABASE_KEY || !ONESIGNAL_APP_ID || !ONESIGNAL_REST_API_KEY) {
     return { error: 'missing_env', detail: 'Vérifie les variables d\'environnement Vercel.' };
+  }
+
+  const playerIds = await getPlayerIds();
+  if (playerIds.length === 0) {
+    return { error: 'no_devices', detail: 'Aucun appareil enregistré côté OneSignal pour recevoir des notifications.' };
   }
 
   const tasks = await supabaseGet('tasks?select=id,title,time,recurrence_type,recurrence_days');
@@ -136,7 +152,7 @@ async function runScheduling() {
         const already = await supabaseGet('scheduled_notifications?select=id&id=eq.' + encodeURIComponent(id));
         if (already.length > 0) { skipped++; continue; }
 
-        const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt);
+        const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt, playerIds);
         await supabaseInsert('scheduled_notifications', { id, task_id: task.id, date: ds });
         scheduled++;
         details.push({ task: task.title, date: ds, sendAt: sendAt.toISOString(), oneSignalId: osResult.id, recipients: osResult.recipients, errorsFromOS: osResult.errors });
