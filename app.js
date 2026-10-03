@@ -247,4 +247,347 @@
         + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>'
         + 'Ajouter une tâche ce jour</button>';
       html += '<div class="day-group">'
-        + '<div
+        + '<div class="day-group-header'+(i===0?' today':'')+'">'+fmtGroupLabel(d, i===0)+'<span class="n">· '+dayTasks.length+' tâche'+(dayTasks.length>1?'s':'')+'</span></div>'
+        + '<div class="day-card">'+rows+addRow+'</div>'
+        + '</div>';
+    }
+
+    container.innerHTML = any ? html : '<div class="empty-state">Aucune tâche planifiée pour les 14 prochains jours.<br>Ajoute-en depuis l\'onglet Tâches.</div>';
+  }
+
+  function renderAll(){
+    renderHeaderDate();
+    renderRail();
+    renderTasks();
+    renderTracker();
+    renderPlanning();
+  }
+
+  // ======================= reminders (pendant que l'appli est ouverte) =======================
+
+  function checkReminders(){
+    var now = new Date();
+    var ds = dateKey(now);
+    var changed = false;
+    todayTaskList().forEach(function(t){
+      var key = ds + "_" + t.id;
+      var log = logs[key];
+      var done = !!(log && log.done);
+      if (done){
+        if (dueSoon.delete(t.id)) changed = true;
+        if (overdue.delete(t.id)) changed = true;
+        return;
+      }
+      var dt = taskDateTime(t, ds);
+      var diffMin = (dt - now) / 60000;
+      if (diffMin <= REMINDER_LEAD_MIN && diffMin >= 0){
+        if (!dueSoon.has(t.id)) changed = true;
+        dueSoon.add(t.id); overdue.delete(t.id);
+        if (!notifiedKeys.has(key)){
+          notifiedKeys.add(key);
+          toast((Math.round(diffMin) <= 0 ? 'À faire maintenant : ' : 'Dans '+Math.round(diffMin)+' min : ') + t.title);
+          beep();
+        }
+      } else if (diffMin < 0 && diffMin > -180){
+        if (!overdue.has(t.id)) changed = true;
+        overdue.add(t.id); dueSoon.delete(t.id);
+      } else {
+        if (dueSoon.delete(t.id)) changed = true;
+        if (overdue.delete(t.id)) changed = true;
+      }
+    });
+    if (changed){ renderRail(); renderTasks(); }
+  }
+
+  // ======================= notifications OneSignal (écran verrouillé) =======================
+
+  function refreshNotifBanner(){
+    var banner = document.getElementById('notif-banner');
+    if (!ONESIGNAL_CONFIGURED){ banner.hidden = true; return; }
+    try{
+      var OS = window.OneSignal;
+      var granted = !!(OS && OS.Notifications && OS.Notifications.permission);
+      banner.hidden = granted;
+    }catch(e){ banner.hidden = false; }
+  }
+
+  document.getElementById('notif-enable').addEventListener('click', function(){
+    if (!ONESIGNAL_CONFIGURED){ toast('OneSignal n\'est pas encore configuré (config.js).'); return; }
+    try{
+      var OS = window.OneSignal;
+      if (OS && OS.Notifications && typeof OS.Notifications.requestPermission === 'function'){
+        OS.Notifications.requestPermission().then(function(){
+          toast('Rappels activés sur ce téléphone.');
+          refreshNotifBanner();
+        }).catch(function(){ toast('Active les notifications dans les réglages de ton téléphone.'); });
+      } else {
+        toast('Encore en cours de chargement, réessaie dans quelques secondes.');
+      }
+    }catch(e){ toast('Impossible d\'activer les rappels pour le moment.'); }
+  });
+
+  if (ONESIGNAL_CONFIGURED){
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    window.OneSignalDeferred.push(function(OneSignal){
+      window.OneSignal = OneSignal;
+      OneSignal.init({ appId: CFG.ONESIGNAL_APP_ID }).then(function(){
+        refreshNotifBanner();
+        try{
+          OneSignal.Notifications.addEventListener('permissionChange', refreshNotifBanner);
+        }catch(e){}
+      }).catch(function(){});
+    });
+  }
+
+  // Bouton manuel : reprogramme tout de suite les notifications des tâches
+  // (utile après avoir ajouté une tâche pour aujourd'hui, sans attendre le
+  // passage automatique du soir).
+  document.getElementById('sync-notifs').addEventListener('click', function(){
+    var btn = this;
+    if (btn.classList.contains('is-syncing')) return;
+    btn.classList.add('is-syncing');
+    fetch('/api/sync-notifications').then(function(r){ return r.json(); }).then(function(data){
+      btn.classList.remove('is-syncing');
+      if (!data || data.error){ toast('Synchro impossible pour le moment.'); return; }
+      if (data.scheduled > 0){
+        toast(data.scheduled + ' notification' + (data.scheduled > 1 ? 's' : '') + ' programmée' + (data.scheduled > 1 ? 's' : '') + '.');
+      } else {
+        toast('Déjà à jour.');
+      }
+    }).catch(function(){
+      btn.classList.remove('is-syncing');
+      toast('Synchro impossible pour le moment.');
+    });
+  });
+
+  // ======================= Supabase : chargement + écriture =======================
+
+  function rowToTask(row){
+    return {
+      id: row.id,
+      title: row.title,
+      time: row.time,
+      createdAt: row.created_at,
+      example: !!row.example,
+      recurrence: { type: row.recurrence_type || 'daily', days: row.recurrence_days || [] }
+    };
+  }
+
+  var splashTasksLoaded = false, splashLogsLoaded = false, splashReady = false, splashProgress = 0, splashTimer = null;
+  function splashMarkReady(){ splashReady = true; }
+  function splashTick(){
+    if (!splashReady){
+      var target = 92;
+      splashProgress += (target - splashProgress) * 0.05 + 0.25;
+      if (splashProgress > target) splashProgress = target;
+    } else { splashProgress += 7; }
+    var p = Math.min(100, Math.round(splashProgress));
+    var bar = document.getElementById('splash-bar');
+    var pct = document.getElementById('splash-pct');
+    if (bar) bar.style.width = p + '%';
+    if (pct) pct.textContent = p + '%';
+    if (splashProgress >= 100){ clearInterval(splashTimer); splashFinish(); }
+  }
+  function splashFinish(){
+    var el = document.getElementById('splash');
+    if (!el) return;
+    setTimeout(function(){
+      el.classList.add('hide');
+      setTimeout(function(){ el.remove(); }, 500);
+    }, 150);
+  }
+
+  async function loadTasks(){
+    if (!sb) return;
+    var res = await sb.from('tasks').select('*');
+    if (res.error){ toast('Erreur de chargement des tâches.'); return; }
+    var next = {};
+    (res.data || []).forEach(function(row){ next[row.id] = rowToTask(row); });
+    tasks = next;
+    renderAll();
+    await seedExamplesIfEmpty();
+  }
+
+  async function loadLogs(){
+    if (!sb) return;
+    var cutoff = dateKey(addDays(new Date(), -13));
+    var res = await sb.from('logs').select('*').gte('date', cutoff);
+    if (res.error){ toast('Erreur de chargement du suivi.'); return; }
+    var next = {};
+    (res.data || []).forEach(function(row){ next[row.id] = { date: row.date, taskId: row.task_id, done: !!row.done }; });
+    logs = next;
+    renderAll();
+    checkReminders();
+  }
+
+  async function seedExamplesIfEmpty(){
+    if (Object.keys(tasks).length > 0) return;
+    var rows = EXAMPLE_TASKS.map(function(ex){
+      return { title: ex.title, time: ex.time, recurrence_type: ex.recurrence_type, recurrence_days: ex.recurrence_days, example: true };
+    });
+    var res = await sb.from('tasks').insert(rows).select();
+    if (!res.error){
+      (res.data || []).forEach(function(row){ tasks[row.id] = rowToTask(row); });
+      renderAll();
+    }
+  }
+
+  async function addTask(title, time, recurrence){
+    if (!sb) return;
+    var res = await sb.from('tasks').insert({
+      title: title, time: time,
+      recurrence_type: recurrence.type,
+      recurrence_days: recurrence.type === 'days' ? recurrence.days : []
+    }).select();
+    if (res.error){ toast('Ajout impossible.'); return; }
+    var row = res.data && res.data[0];
+    if (row){ tasks[row.id] = rowToTask(row); renderAll(); }
+  }
+
+  async function deleteTask(id){
+    if (!sb) return;
+    delete tasks[id];
+    renderAll();
+    var res = await sb.from('tasks').delete().eq('id', id);
+    if (res.error) toast('Suppression impossible.');
+  }
+
+  async function toggleTask(id){
+    if (!sb) return;
+    var ds = dateKey();
+    var key = ds + "_" + id;
+    var log = logs[key];
+    var willBeDone = !(log && log.done);
+    logs[key] = { date: ds, taskId: id, done: willBeDone };
+    renderTasks(); renderTracker(); checkReminders();
+    if (willBeDone){
+      var res = await sb.from('logs').upsert({ id: key, task_id: id, date: ds, done: true, done_at: new Date().toISOString() });
+      if (res.error) toast('Impossible d\'enregistrer.');
+    } else {
+      var res2 = await sb.from('logs').delete().eq('id', key);
+      if (res2.error) toast('Impossible d\'enregistrer.');
+    }
+  }
+
+  function wireRealtime(){
+    if (!sb) return;
+    sb.channel('tasks-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, function(){ loadTasks(); })
+      .subscribe();
+    sb.channel('logs-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, function(){ loadLogs(); })
+      .subscribe();
+  }
+
+  // ======================= UI wiring =======================
+
+  document.getElementById('task-list').addEventListener('click', function(e){
+    var row = e.target.closest('.task-row');
+    if (!row) return;
+    var id = row.getAttribute('data-id');
+    var action = e.target.closest('[data-action]');
+    if (!action) return;
+    if (action.dataset.action === 'toggle'){ pendingDelete = null; toggleTask(id); }
+    else if (action.dataset.action === 'delete'){
+      if (pendingDelete === id){ pendingDelete = null; deleteTask(id); }
+      else {
+        pendingDelete = id; renderTasks();
+        setTimeout(function(){ if (pendingDelete === id){ pendingDelete = null; renderTasks(); } }, 3000);
+      }
+    }
+  });
+
+  document.querySelectorAll('.tab').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.tab').forEach(function(b){ b.classList.remove('active'); });
+      btn.classList.add('active');
+      var tab = btn.dataset.tab;
+      document.getElementById('view-tasks').hidden = tab !== 'tasks';
+      document.getElementById('view-planning').hidden = tab !== 'planning';
+      document.getElementById('view-tracker').hidden = tab !== 'tracker';
+    });
+  });
+
+  var sheet = document.getElementById('sheet');
+  var sheetBackdrop = document.getElementById('sheet-backdrop');
+  var dayPicker = document.getElementById('day-picker');
+  var freqMode = 'daily';
+  var selectedDays = new Set();
+
+  function setFreqMode(mode){
+    freqMode = mode;
+    document.querySelectorAll('.seg-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.freq === mode); });
+    dayPicker.hidden = mode !== 'days';
+  }
+  document.querySelectorAll('.seg-btn').forEach(function(b){ b.addEventListener('click', function(){ setFreqMode(b.dataset.freq); }); });
+  document.querySelectorAll('.day-chip').forEach(function(chip){
+    chip.addEventListener('click', function(){
+      var d = +chip.dataset.day;
+      if (selectedDays.has(d)){ selectedDays.delete(d); chip.classList.remove('active'); }
+      else { selectedDays.add(d); chip.classList.add('active'); }
+    });
+  });
+
+  function openSheet(presetDay){
+    document.getElementById('f-title').value = '';
+    document.getElementById('f-time').value = '09:00';
+    selectedDays = new Set();
+    document.querySelectorAll('.day-chip').forEach(function(c){ c.classList.remove('active'); });
+    if (presetDay !== undefined && presetDay !== null){
+      setFreqMode('days');
+      selectedDays.add(presetDay);
+      var chip = document.querySelector('.day-chip[data-day="'+presetDay+'"]');
+      if (chip) chip.classList.add('active');
+    } else { setFreqMode('daily'); }
+    sheet.classList.add('open'); sheetBackdrop.classList.add('open');
+    setTimeout(function(){ document.getElementById('f-title').focus(); }, 260);
+  }
+  function closeSheet(){ sheet.classList.remove('open'); sheetBackdrop.classList.remove('open'); }
+  document.getElementById('fab').addEventListener('click', function(){ openSheet(); });
+  document.getElementById('planning-list').addEventListener('click', function(e){
+    var btn = e.target.closest('.plan-add');
+    if (!btn) return;
+    openSheet(+btn.dataset.day);
+  });
+  document.getElementById('f-cancel').addEventListener('click', closeSheet);
+  sheetBackdrop.addEventListener('click', closeSheet);
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && sheet.classList.contains('open')) closeSheet(); });
+  document.getElementById('f-save').addEventListener('click', function(){
+    var title = document.getElementById('f-title').value.trim();
+    var time = document.getElementById('f-time').value || '09:00';
+    if (!title){ toast('Donne un nom à la tâche.'); return; }
+    var recurrence;
+    if (freqMode === 'days'){
+      if (selectedDays.size === 0){ toast('Choisis au moins un jour.'); return; }
+      recurrence = { type:'days', days: Array.from(selectedDays) };
+    } else { recurrence = { type:'daily' }; }
+    addTask(title, time, recurrence);
+    closeSheet();
+  });
+
+  // ======================= boot =======================
+
+  function boot(){
+    renderHeaderDate();
+    refreshNotifBanner();
+    renderAll();
+
+    if (!CONFIGURED){
+      toast('Configuration à terminer dans config.js.');
+      return;
+    }
+
+    splashTimer = setInterval(splashTick, 60);
+    setTimeout(splashMarkReady, 4000);
+
+    Promise.all([loadTasks(), loadLogs()]).then(function(){
+      splashTasksLoaded = true; splashLogsLoaded = true; splashMarkReady();
+    }).catch(function(){ splashMarkReady(); });
+
+    wireRealtime();
+    setInterval(function(){ renderHeaderDate(); checkReminders(); }, 20000);
+    setInterval(function(){ renderTracker(); renderPlanning(); }, 60000);
+  }
+
+  boot();
+})();
