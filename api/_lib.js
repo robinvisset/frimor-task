@@ -106,4 +106,45 @@ async function oneSignalSchedule(title, body, sendAfterUtc) {
 // déjà programmée pour une date donnée n'est jamais reprogrammée deux fois.
 async function runScheduling() {
   if (!SUPABASE_URL || !SUPABASE_KEY || !ONESIGNAL_APP_ID || !ONESIGNAL_REST_API_KEY) {
-    return { error: 'missing_env', detail: 'Vérifie les
+    return { error: 'missing_env', detail: 'Vérifie les variables d\'environnement Vercel.' };
+  }
+
+  const tasks = await supabaseGet('tasks?select=id,title,time,recurrence_type,recurrence_days');
+  const now = new Date();
+  const todayYMD = parisTodayYMD(now);
+  const tomorrowYMD = addDaysYMD(todayYMD, 1);
+
+  let scheduled = 0, skipped = 0;
+  const errors = [];
+
+  for (const ymd of [todayYMD, tomorrowYMD]) {
+    const ds = ymdToDs(ymd);
+    const weekday = weekdayOf(ymd);
+    for (const task of tasks) {
+      if (!isScheduled(task, weekday)) continue;
+      const [hh, mm] = task.time.split(':').map(Number);
+      const taskUtc = zonedWallTimeToUtc(ymd.y, ymd.m, ymd.d, hh, mm, TIME_ZONE);
+      const sendAt = new Date(taskUtc.getTime() - REMINDER_LEAD_MIN * 60000);
+      if (sendAt.getTime() <= now.getTime() + 60000) { skipped++; continue; } // déjà passé
+
+      const id = ds + '_' + task.id;
+      try {
+        // marque la tâche comme programmée AVANT d'appeler OneSignal : si cette
+        // ligne existe déjà, la contrainte "primary key" la rejette et on saute
+        // sans jamais notifier deux fois, même si la fonction tourne deux fois.
+        const already = await supabaseGet('scheduled_notifications?select=id&id=eq.' + encodeURIComponent(id));
+        if (already.length > 0) { skipped++; continue; }
+
+        await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt);
+        await supabaseInsert('scheduled_notifications', { id, task_id: task.id, date: ds });
+        scheduled++;
+      } catch (e) {
+        errors.push({ task: task.title, date: ds, error: String(e.message || e) });
+      }
+    }
+  }
+
+  return { ok: true, scheduled, skipped, errors, ranAt: now.toISOString() };
+}
+
+module.exports = { runScheduling };
