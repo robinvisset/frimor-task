@@ -203,3 +203,43 @@ nav#tabbar{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;
 #splash .bar-track{width:148px;height:3px;border-radius:2px;background:var(--line);overflow:hidden;margin-top:6px;}
 #splash .bar-fill{height:100%;width:0%;background:var(--fg);}
 #splash .splash-pct{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--fg-faint);letter-spacing:0.04em;}
+
+/* ---------- login ---------- */
+#login-screen{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px;}
+.login-card{width:100%;max-width:360px;display:flex;flex-direction:column;align-items:center;gap:22px;}
+.login-badge{width:56px;height:56px;}
+.login-badge img{width:100%;height:100%;object-fit:contain;display:block;}
+.login-brand{display:flex;flex-direction:column;align-items:center;gap:5px;margin-bottom:4px;}
+.login-brand .brand{font-family:'Archivo Black',sans-serif;font-size:21px;letter-spacing:0.02em;}
+.login-brand .product{font-size:10.5px;letter-spacing:0.34em;color:var(--fg-dim);font-weight:600;}
+.login-label{font-size:11px;text-transform:uppercase;letter-spacing:0.14em;color:var(--fg-faint);text-align:center;margin-bottom:12px;}
+#login-names-step{width:100%;}
+.login-names{display:flex;flex-direction:column;gap:9px;width:100%;}
+.login-name-btn{width:100%;border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--surface);font-size:14.5px;font-weight:700;text-align:left;transition:border-color .15s ease,background .15s ease;}
+.login-name-btn:active{background:var(--surface-2);border-color:var(--fg-dim);}
+.login-pin-step{width:100%;display:flex;flex-direction:column;align-items:center;gap:16px;}
+#login-pin-dots{display:none;}
+.login-pin-input{width:100%;max-width:220px;border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:16px 12px;text-align:center;font-size:28px;font-weight:700;letter-spacing:0.5em;-webkit-text-security:disc;}
+.login-pin-input:focus{border-color:var(--fg-dim);}
+.login-error{font-size:12px;color:var(--fg);background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:6px 14px;}
+.login-pin-step .btn{flex:0 0 auto;width:100%;max-width:220px;margin-top:4px;}
+
+/* ---------- user chip (header) ---------- */
+.user-chip{flex:0 0 auto;display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:6px 10px;font-size:11.5px;font-weight:600;color:var(--fg-dim);}
+.user-chip svg{width:13px;height:13px;}
+
+/* ---------- admin view ---------- */
+.admin-section-spaced{margin-top:28px;}
+.admin-row{display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid var(--line);border-radius:14px;background:var(--surface);margin-bottom:10px;}
+.admin-row-main{flex:1 1 auto;min-width:0;}
+.admin-row-title{font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.admin-row-meta{font-size:11px;color:var(--fg-faint);margin-top:3px;}
+.admin-row-del{flex:0 0 auto;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--fg-faint);border-radius:50%;}
+.admin-row-del.confirm{color:var(--fg);border:1px solid var(--fg);font-size:9px;font-weight:700;letter-spacing:0.04em;width:auto;padding:0 8px;}
+.admin-add-btn{width:100%;margin-top:2px;}
+
+/* ---------- mandatory-task employee picker ---------- */
+.mt-select-all{width:auto!important;flex:0 0 auto;padding:7px 14px;font-size:11.5px;margin-bottom:10px;}
+.mt-employee-picker{display:flex;flex-wrap:wrap;gap:7px;}
+.mt-emp-chip{border:1px solid var(--line);border-radius:999px;padding:8px 13px;font-size:12px;font-weight:600;color:var(--fg-dim);}
+.mt-emp-chip.active{background:var(--fg);color:var(--bg);border-color:var(--fg);}
