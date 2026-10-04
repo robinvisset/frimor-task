@@ -251,6 +251,23 @@
     </div>
   </div>
 
+  <div id="sheet-note-backdrop"></div>
+  <div id="sheet-note">
+    <h2 id="note-title">Note</h2>
+    <div class="field">
+      <label for="note-text">Note (optionnel)</label>
+      <textarea id="note-text" maxlength="300" placeholder="Ex. Chambre 2 en panne, relevé impossible..."></textarea>
+    </div>
+    <button type="button" class="note-blocked-btn" id="note-blocked-btn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+      Signaler un empêchement
+    </button>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="note-cancel">Annuler</button>
+      <button class="btn btn-primary" id="note-save">Enregistrer</button>
+    </div>
+  </div>
+
   <div id="toast"></div>
 </div>
 
