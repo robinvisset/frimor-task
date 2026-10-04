@@ -22,6 +22,31 @@
 </head>
 <body>
 
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-badge"><img src="/logo-mark.png" alt="Frimor"></div>
+    <div class="login-brand">
+      <span class="brand">FRIMOR</span>
+      <span class="product">TASK</span>
+    </div>
+
+    <div id="login-names-step">
+      <div class="login-label">Qui es-tu ?</div>
+      <div id="login-names" class="login-names"></div>
+    </div>
+
+    <div id="login-pin-step" class="login-pin-step" hidden>
+      <div class="login-label">Code de <span id="login-pin-name"></span></div>
+      <div class="login-pin-dots" id="login-pin-dots">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="4" id="login-pin-input" class="login-pin-input" autocomplete="off">
+      <div class="login-error" id="login-error" hidden>Code incorrect, réessaie.</div>
+      <button type="button" class="btn btn-ghost" id="login-back">Retour</button>
+    </div>
+  </div>
+</div>
+
 <div id="app">
   <header>
     <div class="badge"><img src="/logo-mark.png" alt="Frimor"></div>
@@ -29,6 +54,10 @@
       <span class="brand">FRIMOR</span>
       <span class="product">TASK</span>
     </div>
+    <button class="user-chip" id="user-chip" hidden>
+      <span id="user-chip-name"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+    </button>
     <div class="today-date" id="today-date"></div>
   </header>
 
@@ -84,6 +113,20 @@
         <div class="legend-item"><div class="cell na"></div>Non prévu</div>
       </div>
     </section>
+
+    <section class="view" id="view-admin" hidden>
+      <div class="section-label">
+        <span>Employés</span>
+      </div>
+      <div id="admin-employee-list"></div>
+      <button type="button" class="btn btn-ghost admin-add-btn" id="admin-add-employee">+ Ajouter un employé</button>
+
+      <div class="section-label admin-section-spaced">
+        <span>Tâches obligatoires</span>
+      </div>
+      <div id="admin-task-list"></div>
+      <button type="button" class="btn btn-ghost admin-add-btn" id="admin-add-task">+ Nouvelle tâche obligatoire</button>
+    </section>
   </main>
 
   <nav id="tabbar">
@@ -98,6 +141,10 @@
     <button class="tab" data-tab="tracker">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="4" height="9"/><rect x="10" y="6" width="4" height="14"/><rect x="17" y="3" width="4" height="17"/></svg>
       Suivi
+    </button>
+    <button class="tab" data-tab="admin" id="tab-admin" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Gestion
     </button>
   </nav>
 
@@ -135,6 +182,61 @@
     <div class="sheet-actions">
       <button class="btn btn-ghost" id="f-cancel">Annuler</button>
       <button class="btn btn-primary" id="f-save">Ajouter</button>
+    </div>
+  </div>
+
+  <div id="sheet-employee-backdrop"></div>
+  <div id="sheet-employee">
+    <h2>Nouvel employé</h2>
+    <div class="field">
+      <label for="emp-name">Nom</label>
+      <input type="text" id="emp-name" placeholder="Prénom Nom" maxlength="40">
+    </div>
+    <div class="field">
+      <label for="emp-pin">Code à 4 chiffres</label>
+      <input type="tel" inputmode="numeric" maxlength="4" id="emp-pin" placeholder="1234">
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="emp-cancel">Annuler</button>
+      <button class="btn btn-primary" id="emp-save">Ajouter</button>
+    </div>
+  </div>
+
+  <div id="sheet-mtask-backdrop"></div>
+  <div id="sheet-mtask">
+    <h2>Tâche obligatoire</h2>
+    <div class="field">
+      <label for="mt-title">Nom de la tâche</label>
+      <input type="text" id="mt-title" placeholder="Ex. Relevé des températures" maxlength="60">
+    </div>
+    <div class="field">
+      <label for="mt-time">Heure</label>
+      <input type="time" id="mt-time" value="09:00">
+    </div>
+    <div class="field">
+      <label>Fréquence</label>
+      <div class="seg" id="mt-freq-seg">
+        <button type="button" class="seg-btn active" data-freq="daily">Tous les jours</button>
+        <button type="button" class="seg-btn" data-freq="days">Jours choisis</button>
+      </div>
+      <div class="day-picker" id="mt-day-picker" hidden>
+        <button type="button" class="day-chip" data-day="1">LUN</button>
+        <button type="button" class="day-chip" data-day="2">MAR</button>
+        <button type="button" class="day-chip" data-day="3">MER</button>
+        <button type="button" class="day-chip" data-day="4">JEU</button>
+        <button type="button" class="day-chip" data-day="5">VEN</button>
+        <button type="button" class="day-chip" data-day="6">SAM</button>
+        <button type="button" class="day-chip" data-day="0">DIM</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Qui est concerné ?</label>
+      <button type="button" class="btn btn-ghost mt-select-all" id="mt-select-all">Tout le monde</button>
+      <div id="mt-employee-picker" class="mt-employee-picker"></div>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="mt-cancel">Annuler</button>
+      <button class="btn btn-primary" id="mt-save">Créer</button>
     </div>
   </div>
 
