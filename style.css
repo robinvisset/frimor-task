@@ -67,6 +67,11 @@ header{
 .wordmark .product{font-size:10.5px;letter-spacing:0.32em;color:var(--fg-dim);margin-top:3px;font-weight:600;}
 .today-date{font-size:11px;color:var(--fg-faint);text-align:right;text-transform:uppercase;letter-spacing:0.08em;flex:0 0 auto;white-space:pre-line;}
 
+/* ---------- view-as banner (patron consultant un employé) ---------- */
+#view-as-banner{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:1px solid var(--line-soft);background:var(--surface);}
+#view-as-banner span{flex:1 1 auto;font-size:12.5px;font-weight:600;color:var(--fg);}
+#view-as-banner button{flex:0 0 auto;border:1px solid var(--fg);border-radius:8px;padding:7px 12px;font-size:11.5px;font-weight:700;}
+
 /* ---------- due-soon rail ---------- */
 #rail{flex:0 0 auto;display:flex;gap:8px;padding:10px 18px;overflow-x:auto;border-bottom:1px solid var(--line-soft);}
 .rail-chip{display:flex;align-items:center;gap:7px;border:1px solid var(--fg);border-radius:999px;padding:6px 12px 6px 9px;font-size:12px;white-space:nowrap;flex:0 0 auto;}
@@ -239,6 +244,7 @@ nav#tabbar{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;
 .admin-row-main{flex:1 1 auto;min-width:0;}
 .admin-row-title{font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .admin-row-meta{font-size:11px;color:var(--fg-faint);margin-top:3px;}
+.admin-row-view{flex:0 0 auto;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--fg-faint);border-radius:50%;}
 .admin-row-del{flex:0 0 auto;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--fg-faint);border-radius:50%;}
 .admin-row-del.confirm{color:var(--fg);border:1px solid var(--fg);font-size:9px;font-weight:700;letter-spacing:0.04em;width:auto;padding:0 8px;}
 .admin-add-btn{width:100%;margin-top:2px;}
