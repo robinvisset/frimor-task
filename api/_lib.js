@@ -5,6 +5,13 @@
 //
 // Fichier préfixé par "_" : Vercel ne le traite pas comme une route, il ne
 // sert qu'en tant que module importé par les deux autres fichiers.
+//
+// Depuis l'ajout du multi-employés : chaque tâche appartient soit à un
+// employé (tâche personnelle, owner_employee_id), soit est "obligatoire"
+// (is_mandatory) et assignée à une liste d'employés via task_assignees.
+// Chaque notification est désormais envoyée UNIQUEMENT aux employés
+// concernés par la tâche, en ciblant directement leurs player_ids
+// OneSignal (et plus jamais tous les appareils abonnés).
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
@@ -80,17 +87,8 @@ async function supabaseInsert(table, row) {
   }
 }
 
-// Récupère directement la liste des appareils enregistrés (au lieu de
-// viser le groupe "Subscribed Users", qui classait mal les appareils iPhone
-// et bloquait l'envoi avec l'erreur "All included players are not subscribed").
-async function getPlayerIds() {
-  const res = await fetch('https://onesignal.com/api/v1/players?app_id=' + ONESIGNAL_APP_ID + '&limit=300', {
-    headers: { Authorization: 'Basic ' + ONESIGNAL_REST_API_KEY }
-  });
-  const data = await res.json().catch(() => ({}));
-  return (data.players || []).filter(function (p) { return !p.invalid_identifier; }).map(function (p) { return p.id; });
-}
-
+// Envoie (ou programme) une notification à un ou plusieurs appareils précis,
+// identifiés par leurs OneSignal player_ids — jamais à "tous les abonnés".
 async function oneSignalSchedule(title, body, sendAfterUtc, playerIds) {
   const res = await fetch('https://onesignal.com/api/v1/notifications', {
     method: 'POST',
@@ -111,24 +109,54 @@ async function oneSignalSchedule(title, body, sendAfterUtc, playerIds) {
   return data;
 }
 
+// Pour une tâche donnée, renvoie la liste des id employés qui doivent être
+// notifiés : les employés assignés pour une tâche obligatoire, ou le seul
+// propriétaire pour une tâche personnelle.
+function recipientsForTask(task, assigneesByTask) {
+  if (task.is_mandatory) {
+    return assigneesByTask[task.id] || [];
+  }
+  return task.owner_employee_id ? [task.owner_employee_id] : [];
+}
+
 // Regarde les tâches dans Supabase, et pour chacune qui doit sonner
-// aujourd'hui ou demain, demande à OneSignal d'envoyer une notification
-// programmée 20 minutes avant l'heure de la tâche. Idempotent : une tâche
-// déjà programmée pour une date donnée n'est jamais reprogrammée deux fois.
+// aujourd'hui ou demain, demande à OneSignal d'envoyer — à chaque employé
+// concerné, et uniquement à lui — une notification programmée 20 minutes
+// avant l'heure de la tâche. Idempotent : une paire (tâche, employé, date)
+// déjà programmée n'est jamais reprogrammée deux fois.
 async function runScheduling() {
   if (!SUPABASE_URL || !SUPABASE_KEY || !ONESIGNAL_APP_ID || !ONESIGNAL_REST_API_KEY) {
     return { error: 'missing_env', detail: 'Vérifie les variables d\'environnement Vercel.' };
   }
 
-  const playerIds = await getPlayerIds();
-  if (playerIds.length === 0) {
-    return { error: 'no_devices', detail: 'Aucun appareil enregistré côté OneSignal pour recevoir des notifications.' };
+  const [employees, tasks, assigneeRows] = await Promise.all([
+    supabaseGet('employees?select=id,player_ids'),
+    supabaseGet('tasks?select=id,title,time,recurrence_type,recurrence_days,owner_employee_id,is_mandatory'),
+    supabaseGet('task_assignees?select=task_id,employee_id')
+  ]);
+
+  const employeeById = {};
+  for (const e of employees) employeeById[e.id] = e;
+
+  const assigneesByTask = {};
+  for (const row of assigneeRows) {
+    if (!assigneesByTask[row.task_id]) assigneesByTask[row.task_id] = [];
+    assigneesByTask[row.task_id].push(row.employee_id);
   }
 
-  const tasks = await supabaseGet('tasks?select=id,title,time,recurrence_type,recurrence_days');
   const now = new Date();
   const todayYMD = parisTodayYMD(now);
   const tomorrowYMD = addDaysYMD(todayYMD, 1);
+  const dsToday = ymdToDs(todayYMD);
+  const dsTomorrow = ymdToDs(tomorrowYMD);
+
+  // Une seule requête pour connaître tout ce qui est déjà programmé sur ces
+  // deux jours, plutôt qu'une requête par (tâche, employé) — évite de
+  // multiplier les appels Supabase quand il y a plusieurs employés.
+  const already = await supabaseGet(
+    'scheduled_notifications?select=id&date=in.(' + dsToday + ',' + dsTomorrow + ')'
+  );
+  const scheduledSet = new Set(already.map(r => r.id));
 
   let scheduled = 0, skipped = 0;
   const errors = [];
@@ -144,20 +172,25 @@ async function runScheduling() {
       const sendAt = new Date(taskUtc.getTime() - REMINDER_LEAD_MIN * 60000);
       if (sendAt.getTime() <= now.getTime() + 60000) { skipped++; continue; } // déjà passé
 
-      const id = ds + '_' + task.id;
-      try {
-        // marque la tâche comme programmée AVANT d'appeler OneSignal : si cette
-        // ligne existe déjà, la contrainte "primary key" la rejette et on saute
-        // sans jamais notifier deux fois, même si la fonction tourne deux fois.
-        const already = await supabaseGet('scheduled_notifications?select=id&id=eq.' + encodeURIComponent(id));
-        if (already.length > 0) { skipped++; continue; }
+      const recipients = recipientsForTask(task, assigneesByTask);
 
-        const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt, playerIds);
-        await supabaseInsert('scheduled_notifications', { id, task_id: task.id, date: ds });
-        scheduled++;
-        details.push({ task: task.title, date: ds, sendAt: sendAt.toISOString(), oneSignalId: osResult.id, recipients: osResult.recipients, errorsFromOS: osResult.errors });
-      } catch (e) {
-        errors.push({ task: task.title, date: ds, error: String(e.message || e) });
+      for (const employeeId of recipients) {
+        const employee = employeeById[employeeId];
+        const playerIds = (employee && employee.player_ids) || [];
+        if (!playerIds.length) { skipped++; continue; } // pas encore d'appareil connu pour cet employé
+
+        const id = ds + '_' + task.id + '_' + employeeId;
+        if (scheduledSet.has(id)) { skipped++; continue; }
+
+        try {
+          const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt, playerIds);
+          await supabaseInsert('scheduled_notifications', { id, task_id: task.id, date: ds, employee_id: employeeId });
+          scheduledSet.add(id);
+          scheduled++;
+          details.push({ task: task.title, employeeId, date: ds, sendAt: sendAt.toISOString(), oneSignalId: osResult.id, recipients: osResult.recipients, errorsFromOS: osResult.errors });
+        } catch (e) {
+          errors.push({ task: task.title, employeeId, date: ds, error: String(e.message || e) });
+        }
       }
     }
   }
