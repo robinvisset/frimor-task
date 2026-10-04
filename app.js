@@ -11,8 +11,13 @@
     sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
   }
 
-  var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days}}
-  var logs = {};    // "date_taskId" -> {date,taskId,done}
+  var session = null;        // {id, name, is_admin}
+  var employees = {};        // id -> {id,name,is_admin}
+  var assignees = {};        // taskId -> Set(employeeId), pour les tâches obligatoires
+  var loginSelectedId = null;
+
+  var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days},ownerEmployeeId,isMandatory}
+  var logs = {};    // "date_taskId_employeeId" -> {date,taskId,done}
   var dueSoon = new Set();
   var overdue = new Set();
   var notifiedKeys = new Set();
@@ -51,6 +56,7 @@
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
     });
   }
+  function logKey(taskId, ds){ return ds + "_" + taskId + "_" + (session ? session.id : ''); }
 
   function toast(msg){
     var t = document.getElementById('toast');
@@ -74,6 +80,86 @@
     }catch(e){}
   }
 
+  // ======================= session / login =======================
+
+  function saveSession(s){ try{ localStorage.setItem('frimor_session', JSON.stringify(s)); }catch(e){} }
+  function getSavedSession(){ try{ var raw = localStorage.getItem('frimor_session'); return raw ? JSON.parse(raw) : null; }catch(e){ return null; } }
+  function clearSession(){ try{ localStorage.removeItem('frimor_session'); }catch(e){} }
+
+  function renderLoginNames(){
+    var box = document.getElementById('login-names');
+    var list = Object.values(employees).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
+    box.innerHTML = list.length
+      ? list.map(function(e){ return '<button type="button" class="login-name-btn" data-id="'+e.id+'">'+escapeHtml(e.name)+'</button>'; }).join('')
+      : '<div class="empty-state">Aucun compte pour l\'instant.</div>';
+  }
+
+  document.getElementById('login-names').addEventListener('click', function(e){
+    var btn = e.target.closest('.login-name-btn');
+    if (!btn) return;
+    loginSelectedId = btn.dataset.id;
+    var emp = employees[loginSelectedId];
+    document.getElementById('login-pin-name').textContent = emp ? emp.name : '';
+    document.getElementById('login-names-step').hidden = true;
+    document.getElementById('login-pin-step').hidden = false;
+    document.getElementById('login-error').hidden = true;
+    var input = document.getElementById('login-pin-input');
+    input.value = '';
+    setTimeout(function(){ input.focus(); }, 150);
+  });
+
+  document.getElementById('login-back').addEventListener('click', function(){
+    document.getElementById('login-pin-step').hidden = true;
+    document.getElementById('login-names-step').hidden = false;
+    document.getElementById('login-pin-input').value = '';
+  });
+
+  document.getElementById('login-pin-input').addEventListener('input', function(){
+    var v = this.value.replace(/\D/g,'').slice(0,4);
+    this.value = v;
+    document.getElementById('login-error').hidden = true;
+    if (v.length === 4){ attemptLogin(loginSelectedId, v); }
+  });
+
+  function attemptLogin(id, pin){
+    if (!sb || !id) return;
+    sb.from('employees').select('id,name,is_admin,pin').eq('id', id).single().then(function(res){
+      if (res.error || !res.data || String(res.data.pin) !== pin){
+        document.getElementById('login-error').hidden = false;
+        document.getElementById('login-pin-input').value = '';
+        return;
+      }
+      session = { id: res.data.id, name: res.data.name, is_admin: !!res.data.is_admin };
+      enterApp();
+    }).catch(function(){
+      document.getElementById('login-error').hidden = false;
+    });
+  }
+
+  document.getElementById('user-chip').addEventListener('click', function(){
+    clearSession();
+    location.reload();
+  });
+
+  function enterApp(){
+    document.getElementById('login-screen').hidden = true;
+    document.getElementById('user-chip').hidden = false;
+    document.getElementById('user-chip-name').textContent = session.name;
+    document.getElementById('tab-admin').hidden = !session.is_admin;
+    saveSession(session);
+    syncPlayerIdSoon();
+
+    loadAssignees().then(function(){
+      return Promise.all([loadTasks(), loadLogs()]);
+    }).then(function(){
+      splashTasksLoaded = true; splashLogsLoaded = true; splashMarkReady();
+    }).catch(function(){ splashMarkReady(); });
+
+    wireRealtime();
+    setInterval(function(){ renderHeaderDate(); checkReminders(); }, 20000);
+    setInterval(function(){ renderTracker(); renderPlanning(); }, 60000);
+  }
+
   // ======================= rendering =======================
 
   function renderHeaderDate(){
@@ -84,7 +170,11 @@
   }
 
   function allTaskList(){
-    return Object.values(tasks).sort(function(a,b){ return a.time.localeCompare(b.time); });
+    if (!session) return [];
+    return Object.values(tasks).filter(function(t){
+      if (t.isMandatory) return assignees[t.id] && assignees[t.id].has(session.id);
+      return t.ownerEmployeeId === session.id;
+    }).sort(function(a,b){ return a.time.localeCompare(b.time); });
   }
   function todayTaskList(){
     var today = new Date();
@@ -117,7 +207,7 @@
     var doneCount = 0;
 
     if (list.length === 0){
-      var hasAnyTask = Object.keys(tasks).length > 0;
+      var hasAnyTask = allTaskList().length > 0;
       container.innerHTML = hasAnyTask
         ? '<div class="empty-state">Aucune tâche prévue aujourd\'hui.<br>Regarde l\'onglet Planning pour voir la semaine.</div>'
         : '<div class="empty-state">Aucune tâche aujourd\'hui.<br>Ajoute ta première tâche avec le bouton +.</div>';
@@ -126,7 +216,7 @@
     }
 
     var html = list.map(function(t){
-      var key = ds + "_" + t.id;
+      var key = logKey(t.id, ds);
       var log = logs[key];
       var done = !!(log && log.done);
       if (done) doneCount++;
@@ -146,13 +236,14 @@
           + '<span class="task-meta">'
             + (overdue.has(t.id) && !done ? '<span class="tag">en retard</span>' : '')
             + (freqLabel(t) ? '<span class="tag">'+freqLabel(t)+'</span>' : '')
+            + (t.isMandatory ? '<span class="tag">obligatoire</span>' : '')
             + (t.example ? '<span class="tag">exemple</span>' : '')
           + '</span>'
         + '</div>'
         + '<span class="task-time mono">'+t.time+'</span>'
-        + '<button class="task-del'+(delIsConfirm?' confirm':'')+'" data-action="delete">'
+        + (t.isMandatory ? '' : '<button class="task-del'+(delIsConfirm?' confirm':'')+'" data-action="delete">'
           + (delIsConfirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
-        + '</button>'
+          + '</button>')
         + '</div>';
     }).join('');
 
@@ -166,7 +257,7 @@
   function dayFullyDone(ds, list){
     var active = list.filter(function(t){ return scheduledOn(t, ds); });
     if (active.length === 0) return false;
-    return active.every(function(t){ var l = logs[ds+"_"+t.id]; return l && l.done; });
+    return active.every(function(t){ var l = logs[logKey(t.id, ds)]; return l && l.done; });
   }
 
   function renderTracker(){
@@ -187,7 +278,7 @@
           var cls = 'cell';
           if (!scheduledOn(t, ds)){ cls += ' na'; }
           else {
-            var log = logs[ds+"_"+t.id];
+            var log = logs[logKey(t.id, ds)];
             var done = log && log.done;
             if (done) cls += ' done';
             else if (ds === dateKey(today)) cls += ' today-pending';
@@ -210,7 +301,7 @@
 
     var ds = dateKey(today);
     var activeToday = list.filter(function(t){ return scheduledOn(t, ds); });
-    var doneToday = activeToday.filter(function(t){ var l = logs[ds+"_"+t.id]; return l && l.done; }).length;
+    var doneToday = activeToday.filter(function(t){ var l = logs[logKey(t.id, ds)]; return l && l.done; }).length;
     var pct = activeToday.length ? Math.round(100*doneToday/activeToday.length) : 0;
     document.getElementById('stat-today').textContent = pct + '%';
   }
@@ -241,6 +332,7 @@
           + '<span class="plan-time mono">'+t.time+'</span>'
           + '<span class="plan-title">'+escapeHtml(t.title)+'</span>'
           + (freq ? '<span class="tag">'+freq+'</span>' : '')
+          + (t.isMandatory ? '<span class="tag">obligatoire</span>' : '')
           + '</div>';
       }).join('');
       var addRow = '<button type="button" class="plan-add" data-day="'+d.getDay()+'">'
@@ -270,7 +362,7 @@
     var ds = dateKey(now);
     var changed = false;
     todayTaskList().forEach(function(t){
-      var key = ds + "_" + t.id;
+      var key = logKey(t.id, ds);
       var log = logs[key];
       var done = !!(log && log.done);
       if (done){
@@ -311,6 +403,29 @@
     }catch(e){ banner.hidden = false; }
   }
 
+  function currentOneSignalId(){
+    try{
+      if (window.OneSignal && window.OneSignal.User && window.OneSignal.User.PushSubscription){
+        return window.OneSignal.User.PushSubscription.id || null;
+      }
+    }catch(e){}
+    return null;
+  }
+
+  function syncPlayerIdToEmployee(){
+    if (!sb || !session) return;
+    var pid = currentOneSignalId();
+    if (!pid) return;
+    sb.from('employees').select('player_ids').eq('id', session.id).single().then(function(res){
+      if (res.error || !res.data) return;
+      var ids = res.data.player_ids || [];
+      if (ids.indexOf(pid) !== -1) return;
+      ids.push(pid);
+      sb.from('employees').update({ player_ids: ids }).eq('id', session.id).then(function(){});
+    }).catch(function(){});
+  }
+  function syncPlayerIdSoon(){ setTimeout(syncPlayerIdToEmployee, 1500); }
+
   document.getElementById('notif-enable').addEventListener('click', function(){
     if (!ONESIGNAL_CONFIGURED){ toast('OneSignal n\'est pas encore configuré (config.js).'); return; }
     try{
@@ -319,6 +434,7 @@
         OS.Notifications.requestPermission().then(function(){
           toast('Rappels activés sur ce téléphone.');
           refreshNotifBanner();
+          syncPlayerIdSoon();
         }).catch(function(){ toast('Active les notifications dans les réglages de ton téléphone.'); });
       } else {
         toast('Encore en cours de chargement, réessaie dans quelques secondes.');
@@ -332,8 +448,12 @@
       window.OneSignal = OneSignal;
       OneSignal.init({ appId: CFG.ONESIGNAL_APP_ID }).then(function(){
         refreshNotifBanner();
+        syncPlayerIdSoon();
         try{
-          OneSignal.Notifications.addEventListener('permissionChange', refreshNotifBanner);
+          OneSignal.Notifications.addEventListener('permissionChange', function(){
+            refreshNotifBanner();
+            syncPlayerIdSoon();
+          });
         }catch(e){}
       }).catch(function(){});
     });
@@ -369,7 +489,9 @@
       time: row.time,
       createdAt: row.created_at,
       example: !!row.example,
-      recurrence: { type: row.recurrence_type || 'daily', days: row.recurrence_days || [] }
+      recurrence: { type: row.recurrence_type || 'daily', days: row.recurrence_days || [] },
+      ownerEmployeeId: row.owner_employee_id || null,
+      isMandatory: !!row.is_mandatory
     };
   }
 
@@ -397,6 +519,33 @@
     }, 150);
   }
 
+  function loadEmployees(){
+    if (!sb) return Promise.resolve();
+    return sb.from('employees').select('id,name,is_admin').then(function(res){
+      if (res.error) return;
+      var next = {};
+      (res.data || []).forEach(function(row){ next[row.id] = { id: row.id, name: row.name, is_admin: !!row.is_admin }; });
+      employees = next;
+      if (session && session.is_admin){ renderAdminEmployees(); }
+      if (!session){ renderLoginNames(); }
+    });
+  }
+
+  function loadAssignees(){
+    if (!sb) return Promise.resolve();
+    return sb.from('task_assignees').select('task_id,employee_id').then(function(res){
+      if (res.error) return;
+      var next = {};
+      (res.data || []).forEach(function(row){
+        if (!next[row.task_id]) next[row.task_id] = new Set();
+        next[row.task_id].add(row.employee_id);
+      });
+      assignees = next;
+      renderAll();
+      if (session && session.is_admin){ renderAdminTasks(); }
+    });
+  }
+
   async function loadTasks(){
     if (!sb) return;
     var res = await sb.from('tasks').select('*');
@@ -405,13 +554,14 @@
     (res.data || []).forEach(function(row){ next[row.id] = rowToTask(row); });
     tasks = next;
     renderAll();
+    if (session && session.is_admin){ renderAdminTasks(); }
     await seedExamplesIfEmpty();
   }
 
   async function loadLogs(){
-    if (!sb) return;
+    if (!sb || !session) return;
     var cutoff = dateKey(addDays(new Date(), -13));
-    var res = await sb.from('logs').select('*').gte('date', cutoff);
+    var res = await sb.from('logs').select('*').eq('employee_id', session.id).gte('date', cutoff);
     if (res.error){ toast('Erreur de chargement du suivi.'); return; }
     var next = {};
     (res.data || []).forEach(function(row){ next[row.id] = { date: row.date, taskId: row.task_id, done: !!row.done }; });
@@ -421,9 +571,10 @@
   }
 
   async function seedExamplesIfEmpty(){
-    if (Object.keys(tasks).length > 0) return;
+    if (!session) return;
+    if (allTaskList().length > 0) return;
     var rows = EXAMPLE_TASKS.map(function(ex){
-      return { title: ex.title, time: ex.time, recurrence_type: ex.recurrence_type, recurrence_days: ex.recurrence_days, example: true };
+      return { title: ex.title, time: ex.time, recurrence_type: ex.recurrence_type, recurrence_days: ex.recurrence_days, example: true, owner_employee_id: session.id, is_mandatory: false };
     });
     var res = await sb.from('tasks').insert(rows).select();
     if (!res.error){
@@ -433,11 +584,13 @@
   }
 
   async function addTask(title, time, recurrence){
-    if (!sb) return;
+    if (!sb || !session) return;
     var res = await sb.from('tasks').insert({
       title: title, time: time,
       recurrence_type: recurrence.type,
-      recurrence_days: recurrence.type === 'days' ? recurrence.days : []
+      recurrence_days: recurrence.type === 'days' ? recurrence.days : [],
+      owner_employee_id: session.id,
+      is_mandatory: false
     }).select();
     if (res.error){ toast('Ajout impossible.'); return; }
     var row = res.data && res.data[0];
@@ -446,27 +599,40 @@
 
   async function deleteTask(id){
     if (!sb) return;
+    var t = tasks[id];
+    if (t && t.isMandatory && !(session && session.is_admin)){ toast('Seul le patron peut supprimer une tâche obligatoire.'); return; }
     delete tasks[id];
+    delete assignees[id];
     renderAll();
+    if (session && session.is_admin) renderAdminTasks();
     var res = await sb.from('tasks').delete().eq('id', id);
     if (res.error) toast('Suppression impossible.');
   }
 
   async function toggleTask(id){
-    if (!sb) return;
+    if (!sb || !session) return;
     var ds = dateKey();
-    var key = ds + "_" + id;
+    var key = logKey(id, ds);
     var log = logs[key];
     var willBeDone = !(log && log.done);
     logs[key] = { date: ds, taskId: id, done: willBeDone };
     renderTasks(); renderTracker(); checkReminders();
     if (willBeDone){
-      var res = await sb.from('logs').upsert({ id: key, task_id: id, date: ds, done: true, done_at: new Date().toISOString() });
+      var res = await sb.from('logs').upsert({ id: key, task_id: id, date: ds, done: true, done_at: new Date().toISOString(), employee_id: session.id });
       if (res.error) toast('Impossible d\'enregistrer.');
     } else {
       var res2 = await sb.from('logs').delete().eq('id', key);
       if (res2.error) toast('Impossible d\'enregistrer.');
     }
+  }
+
+  async function deleteEmployee(id){
+    if (!sb) return;
+    var res = await sb.from('employees').delete().eq('id', id);
+    if (res.error){ toast('Suppression impossible.'); return; }
+    delete employees[id];
+    renderAdminEmployees();
+    toast('Employé supprimé.');
   }
 
   function wireRealtime(){
@@ -477,9 +643,15 @@
     sb.channel('logs-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, function(){ loadLogs(); })
       .subscribe();
+    sb.channel('employees-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, function(){ loadEmployees(); })
+      .subscribe();
+    sb.channel('assignees-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_assignees' }, function(){ loadAssignees(); })
+      .subscribe();
   }
 
-  // ======================= UI wiring =======================
+  // ======================= UI wiring : tâches (employé) =======================
 
   document.getElementById('task-list').addEventListener('click', function(e){
     var row = e.target.closest('.task-row');
@@ -505,6 +677,8 @@
       document.getElementById('view-tasks').hidden = tab !== 'tasks';
       document.getElementById('view-planning').hidden = tab !== 'planning';
       document.getElementById('view-tracker').hidden = tab !== 'tracker';
+      document.getElementById('view-admin').hidden = tab !== 'admin';
+      if (tab === 'admin'){ renderAdminEmployees(); renderAdminTasks(); }
     });
   });
 
@@ -516,11 +690,11 @@
 
   function setFreqMode(mode){
     freqMode = mode;
-    document.querySelectorAll('.seg-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.freq === mode); });
+    document.querySelectorAll('#freq-seg .seg-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.freq === mode); });
     dayPicker.hidden = mode !== 'days';
   }
-  document.querySelectorAll('.seg-btn').forEach(function(b){ b.addEventListener('click', function(){ setFreqMode(b.dataset.freq); }); });
-  document.querySelectorAll('.day-chip').forEach(function(chip){
+  document.querySelectorAll('#freq-seg .seg-btn').forEach(function(b){ b.addEventListener('click', function(){ setFreqMode(b.dataset.freq); }); });
+  document.querySelectorAll('#day-picker .day-chip').forEach(function(chip){
     chip.addEventListener('click', function(){
       var d = +chip.dataset.day;
       if (selectedDays.has(d)){ selectedDays.delete(d); chip.classList.remove('active'); }
@@ -532,11 +706,11 @@
     document.getElementById('f-title').value = '';
     document.getElementById('f-time').value = '09:00';
     selectedDays = new Set();
-    document.querySelectorAll('.day-chip').forEach(function(c){ c.classList.remove('active'); });
+    document.querySelectorAll('#day-picker .day-chip').forEach(function(c){ c.classList.remove('active'); });
     if (presetDay !== undefined && presetDay !== null){
       setFreqMode('days');
       selectedDays.add(presetDay);
-      var chip = document.querySelector('.day-chip[data-day="'+presetDay+'"]');
+      var chip = document.querySelector('#day-picker .day-chip[data-day="'+presetDay+'"]');
       if (chip) chip.classList.add('active');
     } else { setFreqMode('daily'); }
     sheet.classList.add('open'); sheetBackdrop.classList.add('open');
@@ -551,7 +725,12 @@
   });
   document.getElementById('f-cancel').addEventListener('click', closeSheet);
   sheetBackdrop.addEventListener('click', closeSheet);
-  document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && sheet.classList.contains('open')) closeSheet(); });
+  document.addEventListener('keydown', function(e){
+    if (e.key !== 'Escape') return;
+    if (sheet.classList.contains('open')) closeSheet();
+    if (sheetEmp.classList.contains('open')) closeSheetEmp();
+    if (sheetMt.classList.contains('open')) closeSheetMt();
+  });
   document.getElementById('f-save').addEventListener('click', function(){
     var title = document.getElementById('f-title').value.trim();
     var time = document.getElementById('f-time').value || '09:00';
@@ -563,6 +742,190 @@
     } else { recurrence = { type:'daily' }; }
     addTask(title, time, recurrence);
     closeSheet();
+  });
+
+  // ======================= UI wiring : espace Gestion (patron) =======================
+
+  var pendingDeleteEmp = null;
+  var pendingDeleteMTask = null;
+
+  function renderAdminEmployees(){
+    var box = document.getElementById('admin-employee-list');
+    if (!box) return;
+    var list = Object.values(employees).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
+    if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun employé pour l\'instant.</div>'; return; }
+    box.innerHTML = list.map(function(e){
+      var confirm = pendingDeleteEmp === e.id;
+      return '<div class="admin-row" data-id="'+e.id+'">'
+        + '<div class="admin-row-main"><div class="admin-row-title">'+escapeHtml(e.name)+'</div>'
+        + (e.is_admin ? '<div class="admin-row-meta">Administrateur</div>' : '') + '</div>'
+        + (e.is_admin ? '' : '<button class="admin-row-del'+(confirm?' confirm':'')+'" data-action="delete-employee">'
+          + (confirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
+          + '</button>')
+        + '</div>';
+    }).join('');
+  }
+
+  function mandatoryTaskList(){
+    return Object.values(tasks).filter(function(t){ return t.isMandatory; }).sort(function(a,b){ return a.time.localeCompare(b.time); });
+  }
+
+  function renderAdminTasks(){
+    var box = document.getElementById('admin-task-list');
+    if (!box) return;
+    var list = mandatoryTaskList();
+    if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucune tâche obligatoire pour l\'instant.</div>'; return; }
+    box.innerHTML = list.map(function(t){
+      var names = Array.from(assignees[t.id] || []).map(function(id){ return employees[id] ? employees[id].name : '?'; }).join(', ');
+      var confirm = pendingDeleteMTask === t.id;
+      return '<div class="admin-row" data-id="'+t.id+'">'
+        + '<div class="admin-row-main"><div class="admin-row-title">'+escapeHtml(t.title)+' · '+t.time+'</div>'
+        + '<div class="admin-row-meta">'+(names || 'Personne')+'</div></div>'
+        + '<button class="admin-row-del'+(confirm?' confirm':'')+'" data-action="delete-mtask">'
+          + (confirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
+        + '</button></div>';
+    }).join('');
+  }
+
+  document.getElementById('admin-employee-list').addEventListener('click', function(e){
+    var row = e.target.closest('.admin-row'); if (!row) return;
+    var id = row.dataset.id;
+    var action = e.target.closest('[data-action]'); if (!action) return;
+    if (action.dataset.action === 'delete-employee'){
+      if (pendingDeleteEmp === id){ pendingDeleteEmp = null; deleteEmployee(id); }
+      else {
+        pendingDeleteEmp = id; renderAdminEmployees();
+        setTimeout(function(){ if (pendingDeleteEmp === id){ pendingDeleteEmp = null; renderAdminEmployees(); } }, 3000);
+      }
+    }
+  });
+
+  document.getElementById('admin-task-list').addEventListener('click', function(e){
+    var row = e.target.closest('.admin-row'); if (!row) return;
+    var id = row.dataset.id;
+    var action = e.target.closest('[data-action]'); if (!action) return;
+    if (action.dataset.action === 'delete-mtask'){
+      if (pendingDeleteMTask === id){ pendingDeleteMTask = null; deleteTask(id); }
+      else {
+        pendingDeleteMTask = id; renderAdminTasks();
+        setTimeout(function(){ if (pendingDeleteMTask === id){ pendingDeleteMTask = null; renderAdminTasks(); } }, 3000);
+      }
+    }
+  });
+
+  // --- ajouter un employé ---
+  var sheetEmp = document.getElementById('sheet-employee');
+  var sheetEmpBackdrop = document.getElementById('sheet-employee-backdrop');
+  function closeSheetEmp(){ sheetEmp.classList.remove('open'); sheetEmpBackdrop.classList.remove('open'); }
+  document.getElementById('admin-add-employee').addEventListener('click', function(){
+    document.getElementById('emp-name').value = '';
+    document.getElementById('emp-pin').value = '';
+    sheetEmp.classList.add('open'); sheetEmpBackdrop.classList.add('open');
+  });
+  document.getElementById('emp-cancel').addEventListener('click', closeSheetEmp);
+  sheetEmpBackdrop.addEventListener('click', closeSheetEmp);
+  document.getElementById('emp-save').addEventListener('click', async function(){
+    var name = document.getElementById('emp-name').value.trim();
+    var pin = document.getElementById('emp-pin').value.trim();
+    if (!name){ toast('Donne un nom.'); return; }
+    if (!/^\d{4}$/.test(pin)){ toast('Le code doit avoir 4 chiffres.'); return; }
+    var res = await sb.from('employees').insert({ name: name, pin: pin, is_admin: false }).select();
+    if (res.error){ toast(res.error.code === '23505' ? 'Ce nom existe déjà.' : 'Ajout impossible.'); return; }
+    var row = res.data && res.data[0];
+    if (row) employees[row.id] = { id: row.id, name: row.name, is_admin: false };
+    renderAdminEmployees();
+    closeSheetEmp();
+    toast('Employé ajouté.');
+  });
+
+  // --- créer une tâche obligatoire ---
+  var sheetMt = document.getElementById('sheet-mtask');
+  var sheetMtBackdrop = document.getElementById('sheet-mtask-backdrop');
+  var mtDayPicker = document.getElementById('mt-day-picker');
+  var mtFreqMode = 'daily';
+  var mtSelectedDays = new Set();
+  var mtSelectedEmployees = new Set();
+
+  function setMtFreqMode(mode){
+    mtFreqMode = mode;
+    document.querySelectorAll('#mt-freq-seg .seg-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.freq === mode); });
+    mtDayPicker.hidden = mode !== 'days';
+  }
+  document.querySelectorAll('#mt-freq-seg .seg-btn').forEach(function(b){ b.addEventListener('click', function(){ setMtFreqMode(b.dataset.freq); }); });
+  document.querySelectorAll('#mt-day-picker .day-chip').forEach(function(chip){
+    chip.addEventListener('click', function(){
+      var d = +chip.dataset.day;
+      if (mtSelectedDays.has(d)){ mtSelectedDays.delete(d); chip.classList.remove('active'); }
+      else { mtSelectedDays.add(d); chip.classList.add('active'); }
+    });
+  });
+
+  function renderMtEmployeePicker(){
+    var box = document.getElementById('mt-employee-picker');
+    var list = Object.values(employees).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
+    box.innerHTML = list.map(function(e){
+      return '<button type="button" class="mt-emp-chip'+(mtSelectedEmployees.has(e.id)?' active':'')+'" data-id="'+e.id+'">'+escapeHtml(e.name)+'</button>';
+    }).join('');
+  }
+  document.getElementById('mt-employee-picker').addEventListener('click', function(e){
+    var chip = e.target.closest('.mt-emp-chip'); if (!chip) return;
+    var id = chip.dataset.id;
+    if (mtSelectedEmployees.has(id)){ mtSelectedEmployees.delete(id); chip.classList.remove('active'); }
+    else { mtSelectedEmployees.add(id); chip.classList.add('active'); }
+    renderMtEmployeePicker();
+  });
+  document.getElementById('mt-select-all').addEventListener('click', function(){
+    var allIds = Object.keys(employees);
+    var allSelected = allIds.length > 0 && allIds.every(function(id){ return mtSelectedEmployees.has(id); });
+    if (allSelected){ mtSelectedEmployees.clear(); } else { allIds.forEach(function(id){ mtSelectedEmployees.add(id); }); }
+    renderMtEmployeePicker();
+  });
+
+  function closeSheetMt(){ sheetMt.classList.remove('open'); sheetMtBackdrop.classList.remove('open'); }
+  document.getElementById('admin-add-task').addEventListener('click', function(){
+    document.getElementById('mt-title').value = '';
+    document.getElementById('mt-time').value = '09:00';
+    mtSelectedDays = new Set();
+    mtSelectedEmployees = new Set();
+    document.querySelectorAll('#mt-day-picker .day-chip').forEach(function(c){ c.classList.remove('active'); });
+    setMtFreqMode('daily');
+    renderMtEmployeePicker();
+    sheetMt.classList.add('open'); sheetMtBackdrop.classList.add('open');
+  });
+  document.getElementById('mt-cancel').addEventListener('click', closeSheetMt);
+  sheetMtBackdrop.addEventListener('click', closeSheetMt);
+
+  document.getElementById('mt-save').addEventListener('click', async function(){
+    var title = document.getElementById('mt-title').value.trim();
+    var time = document.getElementById('mt-time').value || '09:00';
+    if (!title){ toast('Donne un nom à la tâche.'); return; }
+    if (mtSelectedEmployees.size === 0){ toast('Choisis au moins un employé.'); return; }
+    var recurrence;
+    if (mtFreqMode === 'days'){
+      if (mtSelectedDays.size === 0){ toast('Choisis au moins un jour.'); return; }
+      recurrence = { type:'days', days: Array.from(mtSelectedDays) };
+    } else { recurrence = { type:'daily' }; }
+
+    var res = await sb.from('tasks').insert({
+      title: title, time: time,
+      recurrence_type: recurrence.type,
+      recurrence_days: recurrence.type === 'days' ? recurrence.days : [],
+      owner_employee_id: null,
+      is_mandatory: true
+    }).select();
+    if (res.error || !res.data || !res.data[0]){ toast('Création impossible.'); return; }
+    var row = res.data[0];
+    tasks[row.id] = rowToTask(row);
+
+    var assigneeRows = Array.from(mtSelectedEmployees).map(function(empId){ return { task_id: row.id, employee_id: empId }; });
+    var res2 = await sb.from('task_assignees').insert(assigneeRows);
+    if (res2.error){ toast('Tâche créée, mais erreur sur les destinataires.'); }
+    else { toast('Tâche obligatoire créée.'); }
+
+    assignees[row.id] = new Set(Array.from(mtSelectedEmployees));
+    renderAll();
+    renderAdminTasks();
+    closeSheetMt();
   });
 
   // ======================= boot =======================
@@ -580,13 +943,20 @@
     splashTimer = setInterval(splashTick, 60);
     setTimeout(splashMarkReady, 4000);
 
-    Promise.all([loadTasks(), loadLogs()]).then(function(){
-      splashTasksLoaded = true; splashLogsLoaded = true; splashMarkReady();
-    }).catch(function(){ splashMarkReady(); });
-
-    wireRealtime();
-    setInterval(function(){ renderHeaderDate(); checkReminders(); }, 20000);
-    setInterval(function(){ renderTracker(); renderPlanning(); }, 60000);
+    loadEmployees().then(function(){
+      var saved = getSavedSession();
+      if (saved && employees[saved.id]){
+        session = saved;
+        enterApp();
+      } else {
+        clearSession();
+        renderLoginNames();
+        splashMarkReady();
+      }
+    }).catch(function(){
+      renderLoginNames();
+      splashMarkReady();
+    });
   }
 
   boot();
