@@ -22,6 +22,7 @@
 
   var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days},ownerEmployeeId,isMandatory}
   var logs = {};    // "date_taskId_employeeId" -> {date,taskId,done}
+  var todayLogsAll = {}; // pour le tableau de bord patron : "date_taskId_employeeId" -> done, pour TOUS les employés, jour courant
   var dueSoon = new Set();
   var overdue = new Set();
   var notifiedKeys = new Set();
@@ -161,7 +162,10 @@
 
     wireRealtime();
     setInterval(function(){ renderHeaderDate(); checkReminders(); }, 20000);
-    setInterval(function(){ renderTracker(); renderPlanning(); }, 60000);
+    setInterval(function(){
+      renderTracker(); renderPlanning();
+      if (session && session.is_admin) loadDashboardLogs();
+    }, 60000);
   }
 
   // ======================= rendering =======================
@@ -184,6 +188,15 @@
   function todayTaskList(){
     var today = new Date();
     return allTaskList().filter(function(t){ return isScheduled(t, today); });
+  }
+
+  // comme allTaskList(), mais pour un employé précis (pas forcément celui
+  // de la session) — utilisé par le tableau de bord du patron.
+  function employeeTasksFor(employeeId){
+    return Object.values(tasks).filter(function(t){
+      if (t.isMandatory) return assignees[t.id] && assignees[t.id].has(employeeId);
+      return t.ownerEmployeeId === employeeId;
+    }).sort(function(a,b){ return a.time.localeCompare(b.time); });
   }
 
   function renderRail(){
@@ -590,6 +603,19 @@
   }
   function loadLogs(){ return loadLogsFor(session ? session.id : null); }
 
+  // Pour le tableau de bord du patron : l'état fait/pas fait d'AUJOURD'HUI,
+  // pour tous les employés (une seule requête légère, pas 14 jours).
+  async function loadDashboardLogs(){
+    if (!sb || !session || !session.is_admin) return;
+    var ds = dateKey();
+    var res = await sb.from('logs').select('id,done').eq('date', ds);
+    if (res.error) return;
+    var next = {};
+    (res.data || []).forEach(function(row){ next[row.id] = !!row.done; });
+    todayLogsAll = next;
+    renderAdminDashboard();
+  }
+
   async function seedExamplesIfEmpty(){
     if (!session) return;
     if (allTaskList().length > 0) return;
@@ -661,7 +687,10 @@
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, function(){ loadTasks(); })
       .subscribe();
     sb.channel('logs-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, function(){ loadLogsFor(viewingEmployeeId()); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, function(){
+        loadLogsFor(viewingEmployeeId());
+        if (session && session.is_admin) loadDashboardLogs();
+      })
       .subscribe();
     sb.channel('employees-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, function(){ loadEmployees(); })
@@ -699,7 +728,7 @@
       document.getElementById('view-planning').hidden = tab !== 'planning';
       document.getElementById('view-tracker').hidden = tab !== 'tracker';
       document.getElementById('view-admin').hidden = tab !== 'admin';
-      if (tab === 'admin'){ renderAdminEmployees(); renderAdminTasks(); }
+      if (tab === 'admin'){ renderAdminEmployees(); renderAdminTasks(); loadDashboardLogs(); }
     });
   });
 
@@ -804,6 +833,34 @@
 
   var pendingDeleteEmp = null;
   var pendingDeleteMTask = null;
+
+  // Vue d'ensemble pour le patron : où en est chaque employé aujourd'hui,
+  // sans avoir à cliquer sur chacun (l'œil "Voir" reste disponible pour le détail).
+  function renderAdminDashboard(){
+    var box = document.getElementById('admin-dashboard-list');
+    if (!box) return;
+    var ds = dateKey();
+    var now = new Date();
+    var list = Object.values(employees).filter(function(e){ return !e.is_admin; }).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
+    if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun employé pour l\'instant.</div>'; return; }
+    box.innerHTML = list.map(function(e){
+      var empTasks = employeeTasksFor(e.id).filter(function(t){ return isScheduled(t, now); });
+      var done = 0, lateMandatory = false;
+      empTasks.forEach(function(t){
+        var key = ds + '_' + t.id + '_' + e.id;
+        if (todayLogsAll[key]){ done++; return; }
+        if (t.isMandatory && taskDateTime(t, ds).getTime() < now.getTime()) lateMandatory = true;
+      });
+      var total = empTasks.length;
+      var dotCls = lateMandatory ? ' alert' : (total > 0 && done === total ? ' ok' : '');
+      var subCls = lateMandatory ? ' alert-text' : '';
+      return '<div class="dash-row'+(lateMandatory?' alert':'')+'">'
+        + '<div class="dash-row-main"><div class="dash-row-name">'+escapeHtml(e.name)+'</div>'
+        + '<div class="dash-row-sub'+subCls+'">'+done+'/'+total+' tâche'+(total===1?'':'s')+' aujourd\'hui'+(lateMandatory ? ' · obligatoire en retard' : '')+'</div></div>'
+        + '<div class="dash-row-dot'+dotCls+'"></div>'
+        + '</div>';
+    }).join('');
+  }
 
   function renderAdminEmployees(){
     var box = document.getElementById('admin-employee-list');
