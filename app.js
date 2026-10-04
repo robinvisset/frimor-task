@@ -21,7 +21,7 @@
   function isReadOnlyView(){ return !!viewAsId; }
 
   var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days},ownerEmployeeId,isMandatory}
-  var logs = {};    // "date_taskId_employeeId" -> {date,taskId,done}
+  var logs = {};    // "date_taskId_employeeId" -> {date,taskId,done,note,blocked}
   var todayLogsAll = {}; // pour le tableau de bord patron : "date_taskId_employeeId" -> done, pour TOUS les employés, jour courant
   var dueSoon = new Set();
   var overdue = new Set();
@@ -243,9 +243,12 @@
       var key = logKey(t.id, ds);
       var log = logs[key];
       var done = !!(log && log.done);
+      var blocked = !!(log && log.blocked);
+      var note = (log && log.note) || '';
       if (done) doneCount++;
       var cls = 'task-row';
       if (done) cls += ' done';
+      else if (blocked) cls += ' blocked';
       else if (dueSoon.has(t.id)) cls += ' due';
       else if (overdue.has(t.id)) cls += ' overdue';
 
@@ -258,13 +261,18 @@
         + '<div class="task-main">'
           + '<span class="task-title">'+escapeHtml(t.title)+'</span>'
           + '<span class="task-meta">'
-            + (overdue.has(t.id) && !done ? '<span class="tag">en retard</span>' : '')
+            + (blocked ? '<span class="tag tag-alert">empêchement signalé</span>' : '')
+            + (overdue.has(t.id) && !done && !blocked ? '<span class="tag">en retard</span>' : '')
             + (freqLabel(t) ? '<span class="tag">'+freqLabel(t)+'</span>' : '')
             + (t.isMandatory ? '<span class="tag">obligatoire</span>' : '')
             + (t.example ? '<span class="tag">exemple</span>' : '')
           + '</span>'
+          + (note ? '<span class="task-note-text">'+escapeHtml(note)+'</span>' : '')
         + '</div>'
         + '<span class="task-time mono">'+t.time+'</span>'
+        + (ro ? '' : '<button class="task-note'+((note||blocked)?' has-note':'')+'" data-action="note" aria-label="Note / signaler un empêchement">'
+          + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+          + '</button>')
         + (t.isMandatory || ro ? '' : '<button class="task-del'+(delIsConfirm?' confirm':'')+'" data-action="delete">'
           + (delIsConfirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
           + '</button>')
@@ -596,22 +604,22 @@
     // ou changé d'employé consulté), on ignore ce résultat devenu obsolète.
     if (employeeId !== viewingEmployeeId()) return;
     var next = {};
-    (res.data || []).forEach(function(row){ next[row.id] = { date: row.date, taskId: row.task_id, done: !!row.done }; });
+    (res.data || []).forEach(function(row){ next[row.id] = { date: row.date, taskId: row.task_id, done: !!row.done, note: row.note || '', blocked: !!row.blocked }; });
     logs = next;
     renderAll();
     checkReminders();
   }
   function loadLogs(){ return loadLogsFor(session ? session.id : null); }
 
-  // Pour le tableau de bord du patron : l'état fait/pas fait d'AUJOURD'HUI,
+  // Pour le tableau de bord du patron : l'état fait/pas fait/empêchement d'AUJOURD'HUI,
   // pour tous les employés (une seule requête légère, pas 14 jours).
   async function loadDashboardLogs(){
     if (!sb || !session || !session.is_admin) return;
     var ds = dateKey();
-    var res = await sb.from('logs').select('id,done').eq('date', ds);
+    var res = await sb.from('logs').select('id,done,blocked').eq('date', ds);
     if (res.error) return;
     var next = {};
-    (res.data || []).forEach(function(row){ next[row.id] = !!row.done; });
+    (res.data || []).forEach(function(row){ next[row.id] = { done: !!row.done, blocked: !!row.blocked }; });
     todayLogsAll = next;
     renderAdminDashboard();
     renderAdminEmployees();
@@ -662,15 +670,42 @@
     var key = logKey(id, ds);
     var log = logs[key];
     var willBeDone = !(log && log.done);
-    logs[key] = { date: ds, taskId: id, done: willBeDone };
-    renderTasks(); renderTracker(); checkReminders();
     if (willBeDone){
-      var res = await sb.from('logs').upsert({ id: key, task_id: id, date: ds, done: true, done_at: new Date().toISOString(), employee_id: session.id });
+      var note = (log && log.note) || '';
+      logs[key] = { date: ds, taskId: id, done: true, note: note, blocked: false };
+      renderTasks(); renderTracker(); checkReminders();
+      var res = await sb.from('logs').upsert({ id: key, task_id: id, date: ds, done: true, done_at: new Date().toISOString(), employee_id: session.id, note: note || null, blocked: false });
       if (res.error) toast('Impossible d\'enregistrer.');
     } else {
+      delete logs[key];
+      renderTasks(); renderTracker(); checkReminders();
       var res2 = await sb.from('logs').delete().eq('id', key);
       if (res2.error) toast('Impossible d\'enregistrer.');
     }
+  }
+
+  // Enregistre la note texte et/ou l'empêchement signalé pour une tâche,
+  // sans forcément la marquer comme faite. Signaler un empêchement remet
+  // automatiquement la tâche à "pas faite" (on ne peut pas faire les deux).
+  async function saveNoteAndBlocked(id, noteText, blocked){
+    if (!sb || !session || isReadOnlyView()) return;
+    var ds = dateKey();
+    var key = logKey(id, ds);
+    var log = logs[key];
+    var done = blocked ? false : !!(log && log.done);
+    if (!noteText && !blocked && !done){
+      delete logs[key];
+      renderTasks(); renderTracker(); checkReminders();
+      var resDel = await sb.from('logs').delete().eq('id', key);
+      if (resDel.error) toast('Impossible d\'enregistrer.');
+      return;
+    }
+    logs[key] = { date: ds, taskId: id, done: done, note: noteText, blocked: blocked };
+    renderTasks(); renderTracker(); checkReminders();
+    var payload = { id: key, task_id: id, date: ds, done: done, employee_id: session.id, note: noteText || null, blocked: blocked };
+    if (done) payload.done_at = new Date().toISOString();
+    var res = await sb.from('logs').upsert(payload);
+    if (res.error) toast('Impossible d\'enregistrer.');
   }
 
   async function deleteEmployee(id){
@@ -710,6 +745,7 @@
     var action = e.target.closest('[data-action]');
     if (!action) return;
     if (action.dataset.action === 'toggle'){ pendingDelete = null; toggleTask(id); }
+    else if (action.dataset.action === 'note'){ openNoteSheet(id); }
     else if (action.dataset.action === 'delete'){
       if (pendingDelete === id){ pendingDelete = null; deleteTask(id); }
       else {
@@ -816,6 +852,7 @@
     if (sheet.classList.contains('open')) closeSheet();
     if (sheetEmp.classList.contains('open')) closeSheetEmp();
     if (sheetMt.classList.contains('open')) closeSheetMt();
+    if (sheetNote.classList.contains('open')) closeSheetNote();
   });
   document.getElementById('f-save').addEventListener('click', function(){
     var title = document.getElementById('f-title').value.trim();
@@ -846,18 +883,22 @@
     if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun employé pour l\'instant.</div>'; return; }
     box.innerHTML = list.map(function(e){
       var empTasks = employeeTasksFor(e.id).filter(function(t){ return isScheduled(t, now); });
-      var done = 0, lateMandatory = false;
+      var done = 0, lateMandatory = false, blockedCount = 0;
       empTasks.forEach(function(t){
         var key = ds + '_' + t.id + '_' + e.id;
-        if (todayLogsAll[key]){ done++; return; }
+        var entry = todayLogsAll[key];
+        if (entry && entry.blocked){ blockedCount++; return; }
+        if (entry && entry.done){ done++; return; }
         if (t.isMandatory && taskDateTime(t, ds).getTime() < now.getTime()) lateMandatory = true;
       });
       var total = empTasks.length;
-      var dotCls = lateMandatory ? ' alert' : (total > 0 && done === total ? ' ok' : '');
-      var subCls = lateMandatory ? ' alert-text' : '';
-      return '<div class="dash-row'+(lateMandatory?' alert':'')+'">'
+      var alert = lateMandatory || blockedCount > 0;
+      var dotCls = alert ? ' alert' : (total > 0 && done === total ? ' ok' : '');
+      var subCls = alert ? ' alert-text' : '';
+      var extra = blockedCount > 0 ? ' · ' + blockedCount + ' empêchement' + (blockedCount > 1 ? 's' : '') + ' signalé' + (blockedCount > 1 ? 's' : '') : (lateMandatory ? ' · obligatoire en retard' : '');
+      return '<div class="dash-row'+(alert?' alert':'')+'">'
         + '<div class="dash-row-main"><div class="dash-row-name">'+escapeHtml(e.name)+'</div>'
-        + '<div class="dash-row-sub'+subCls+'">'+done+'/'+total+' tâche'+(total===1?'':'s')+' aujourd\'hui'+(lateMandatory ? ' · obligatoire en retard' : '')+'</div></div>'
+        + '<div class="dash-row-sub'+subCls+'">'+done+'/'+total+' tâche'+(total===1?'':'s')+' aujourd\'hui'+extra+'</div></div>'
         + '<div class="dash-row-dot'+dotCls+'"></div>'
         + '</div>';
     }).join('');
@@ -878,8 +919,9 @@
         metaText = 'Administrateur';
       } else {
         var empTasks = employeeTasksFor(e.id).filter(function(t){ return isScheduled(t, now); });
-        var done = empTasks.filter(function(t){ return !!todayLogsAll[ds + '_' + t.id + '_' + e.id]; }).length;
-        metaText = done + '/' + empTasks.length + ' tâche' + (empTasks.length === 1 ? '' : 's') + ' aujourd\'hui';
+        var done = empTasks.filter(function(t){ var entry = todayLogsAll[ds + '_' + t.id + '_' + e.id]; return entry && entry.done; }).length;
+        var blockedCount = empTasks.filter(function(t){ var entry = todayLogsAll[ds + '_' + t.id + '_' + e.id]; return entry && entry.blocked; }).length;
+        metaText = done + '/' + empTasks.length + ' tâche' + (empTasks.length === 1 ? '' : 's') + ' aujourd\'hui' + (blockedCount > 0 ? ' · ' + blockedCount + ' empêchement' + (blockedCount > 1 ? 's' : '') : '');
       }
       return '<div class="admin-row" data-id="'+e.id+'">'
         + '<div class="admin-row-main"><div class="admin-row-title">'+escapeHtml(e.name)+'</div>'
@@ -1070,6 +1112,44 @@
     renderAll();
     renderAdminTasks();
     closeSheetMt();
+  });
+
+  // ======================= note / empêchement (employé) =======================
+
+  var sheetNote = document.getElementById('sheet-note');
+  var sheetNoteBackdrop = document.getElementById('sheet-note-backdrop');
+  var noteBlockedBtn = document.getElementById('note-blocked-btn');
+  var noteSheetTaskId = null;
+  var noteSheetBlocked = false;
+
+  function setNoteBlocked(v){
+    noteSheetBlocked = v;
+    noteBlockedBtn.classList.toggle('active', v);
+  }
+
+  function openNoteSheet(taskId){
+    if (isReadOnlyView()) return;
+    var t = tasks[taskId];
+    if (!t) return;
+    noteSheetTaskId = taskId;
+    var log = logs[logKey(taskId, dateKey())];
+    document.getElementById('note-title').textContent = t.title;
+    document.getElementById('note-text').value = (log && log.note) || '';
+    setNoteBlocked(!!(log && log.blocked));
+    sheetNote.classList.add('open'); sheetNoteBackdrop.classList.add('open');
+  }
+  function closeSheetNote(){
+    sheetNote.classList.remove('open'); sheetNoteBackdrop.classList.remove('open');
+    noteSheetTaskId = null;
+  }
+  noteBlockedBtn.addEventListener('click', function(){ setNoteBlocked(!noteSheetBlocked); });
+  document.getElementById('note-cancel').addEventListener('click', closeSheetNote);
+  sheetNoteBackdrop.addEventListener('click', closeSheetNote);
+  document.getElementById('note-save').addEventListener('click', function(){
+    if (!noteSheetTaskId) return;
+    var noteText = document.getElementById('note-text').value.trim().slice(0, 300);
+    saveNoteAndBlocked(noteSheetTaskId, noteText, noteSheetBlocked);
+    closeSheetNote();
   });
 
   // ======================= boot =======================
