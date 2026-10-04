@@ -86,6 +86,7 @@ header{
 .banner p{flex:1 1 auto;font-size:12.5px;color:var(--fg-dim);line-height:1.4;margin:0;}
 .banner button{flex:0 0 auto;border:1px solid var(--fg);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:600;}
 
+#pending-sync-banner{flex:0 0 auto;}
 .sync-row{margin:12px 0 0;}
 .sync-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--fg-dim);padding:10px 14px;font-size:12.5px;font-weight:600;transition:opacity .2s ease;}
 .sync-btn svg{width:15px;height:15px;stroke:var(--fg-dim);flex:0 0 auto;}
