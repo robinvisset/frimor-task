@@ -614,6 +614,7 @@
     (res.data || []).forEach(function(row){ next[row.id] = !!row.done; });
     todayLogsAll = next;
     renderAdminDashboard();
+    renderAdminEmployees();
   }
 
   async function seedExamplesIfEmpty(){
@@ -865,14 +866,24 @@
   function renderAdminEmployees(){
     var box = document.getElementById('admin-employee-list');
     if (!box) return;
+    var ds = dateKey();
+    var now = new Date();
     var list = Object.values(employees).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
     if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun employé pour l\'instant.</div>'; return; }
     box.innerHTML = list.map(function(e){
       var confirm = pendingDeleteEmp === e.id;
       var isSelf = session && e.id === session.id;
+      var metaText;
+      if (e.is_admin){
+        metaText = 'Administrateur';
+      } else {
+        var empTasks = employeeTasksFor(e.id).filter(function(t){ return isScheduled(t, now); });
+        var done = empTasks.filter(function(t){ return !!todayLogsAll[ds + '_' + t.id + '_' + e.id]; }).length;
+        metaText = done + '/' + empTasks.length + ' tâche' + (empTasks.length === 1 ? '' : 's') + ' aujourd\'hui';
+      }
       return '<div class="admin-row" data-id="'+e.id+'">'
         + '<div class="admin-row-main"><div class="admin-row-title">'+escapeHtml(e.name)+'</div>'
-        + (e.is_admin ? '<div class="admin-row-meta">Administrateur</div>' : '') + '</div>'
+        + '<div class="admin-row-meta">'+metaText+'</div></div>'
         + (isSelf ? '' : '<button class="admin-row-view" data-action="view-employee" aria-label="Voir ses tâches">'
           + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>'
           + '</button>')
