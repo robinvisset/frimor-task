@@ -221,6 +221,8 @@
           ? '<div class="empty-state">Aucune tâche prévue aujourd\'hui.<br>Regarde l\'onglet Planning pour voir la semaine.</div>'
           : '<div class="empty-state">Aucune tâche aujourd\'hui.<br>Ajoute ta première tâche avec le bouton +.</div>');
       document.getElementById('today-count').textContent = '0/0';
+      var bar0 = document.getElementById('today-progress');
+      if (bar0) bar0.style.width = '0%';
       return;
     }
 
@@ -258,6 +260,9 @@
 
     container.innerHTML = html;
     document.getElementById('today-count').textContent = doneCount + '/' + list.length;
+    var pct = list.length ? Math.round(100 * doneCount / list.length) : 0;
+    var bar = document.getElementById('today-progress');
+    if (bar) bar.style.width = pct + '%';
   }
 
   function scheduledOn(t, ds){
@@ -836,6 +841,9 @@
       return '<div class="admin-row" data-id="'+t.id+'">'
         + '<div class="admin-row-main"><div class="admin-row-title">'+escapeHtml(t.title)+' · '+t.time+'</div>'
         + '<div class="admin-row-meta">'+(names || 'Personne')+'</div></div>'
+        + '<button class="admin-row-dup" data-action="duplicate-mtask" aria-label="Dupliquer cette tâche">'
+          + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
+        + '</button>'
         + '<button class="admin-row-del'+(confirm?' confirm':'')+'" data-action="delete-mtask">'
           + (confirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
         + '</button></div>';
@@ -861,7 +869,10 @@
     var row = e.target.closest('.admin-row'); if (!row) return;
     var id = row.dataset.id;
     var action = e.target.closest('[data-action]'); if (!action) return;
-    if (action.dataset.action === 'delete-mtask'){
+    if (action.dataset.action === 'duplicate-mtask'){
+      var t = tasks[id];
+      if (t) openMtSheet(t);
+    } else if (action.dataset.action === 'delete-mtask'){
       if (pendingDeleteMTask === id){ pendingDeleteMTask = null; deleteTask(id); }
       else {
         pendingDeleteMTask = id; renderAdminTasks();
@@ -939,16 +950,24 @@
   });
 
   function closeSheetMt(){ sheetMt.classList.remove('open'); sheetMtBackdrop.classList.remove('open'); }
-  document.getElementById('admin-add-task').addEventListener('click', function(){
-    document.getElementById('mt-title').value = '';
-    document.getElementById('mt-time').value = '09:00';
-    mtSelectedDays = new Set();
-    mtSelectedEmployees = new Set();
-    document.querySelectorAll('#mt-day-picker .day-chip').forEach(function(c){ c.classList.remove('active'); });
-    setMtFreqMode('daily');
+
+  // prefill : si fourni (tâche existante), prépare le formulaire pour une
+  // DUPLICATION — "Dupliquer" crée toujours une nouvelle tâche, jamais une
+  // modification de l'originale.
+  function openMtSheet(prefill){
+    document.getElementById('mt-title').value = prefill ? (prefill.title + ' (copie)') : '';
+    document.getElementById('mt-time').value = prefill ? prefill.time : '09:00';
+    var isDays = prefill && prefill.recurrence && prefill.recurrence.type === 'days';
+    mtSelectedDays = new Set(isDays ? prefill.recurrence.days : []);
+    mtSelectedEmployees = new Set(prefill ? Array.from(assignees[prefill.id] || []) : []);
+    document.querySelectorAll('#mt-day-picker .day-chip').forEach(function(c){
+      c.classList.toggle('active', mtSelectedDays.has(+c.dataset.day));
+    });
+    setMtFreqMode(isDays ? 'days' : 'daily');
     renderMtEmployeePicker();
     sheetMt.classList.add('open'); sheetMtBackdrop.classList.add('open');
-  });
+  }
+  document.getElementById('admin-add-task').addEventListener('click', function(){ openMtSheet(null); });
   document.getElementById('mt-cancel').addEventListener('click', closeSheetMt);
   sheetMtBackdrop.addEventListener('click', closeSheetMt);
 
