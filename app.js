@@ -27,6 +27,18 @@
   var overdue = new Set();
   var notifiedKeys = new Set();
 
+  // Changements (coché / note / empêchement) pas encore envoyés au serveur,
+  // typiquement parce que la connexion a coupé (ex. chambre froide). On les
+  // garde ici ET dans localStorage, pour les ré-essayer automatiquement dès
+  // que la connexion revient — sans jamais perdre l'action de l'employé.
+  // Clé = "date_taskId_employeeId" (même clé que logs), valeur = l'opération
+  // à rejouer : { kind:'upsert', payload } ou { kind:'delete' }.
+  function loadPendingSync(){ try{ var raw = localStorage.getItem('frimor_pending_sync'); return raw ? JSON.parse(raw) : {}; }catch(e){ return {}; } }
+  function savePendingSync(){ try{ localStorage.setItem('frimor_pending_sync', JSON.stringify(pendingSync)); }catch(e){} }
+  var pendingSync = loadPendingSync();
+  var flushingSync = false;
+  var flushSoonTimer = null;
+
   var DAY_NAMES = {0:'DIM',1:'LUN',2:'MAR',3:'MER',4:'JEU',5:'VEN',6:'SAM'};
   var REMINDER_LEAD_MIN = 20;
 
@@ -153,6 +165,8 @@
     document.getElementById('tab-admin').hidden = !session.is_admin;
     saveSession(session);
     syncPlayerIdSoon();
+    updateSyncBadge();
+    flushPendingSync();
 
     loadAssignees().then(function(){
       return Promise.all([loadTasks(), loadLogs()]);
@@ -161,7 +175,7 @@
     }).catch(function(){ splashMarkReady(); });
 
     wireRealtime();
-    setInterval(function(){ renderHeaderDate(); checkReminders(); }, 20000);
+    setInterval(function(){ renderHeaderDate(); checkReminders(); flushPendingSync(); }, 20000);
     setInterval(function(){
       renderTracker(); renderPlanning();
       if (session && session.is_admin) loadDashboardLogs();
@@ -605,11 +619,79 @@
     if (employeeId !== viewingEmployeeId()) return;
     var next = {};
     (res.data || []).forEach(function(row){ next[row.id] = { date: row.date, taskId: row.task_id, done: !!row.done, note: row.note || '', blocked: !!row.blocked }; });
+    // Réapplique par-dessus les changements pas encore synchronisés (hors
+    // connexion), sinon une case cochée sans réseau réapparaîtrait "pas
+    // faite" à l'écran dès qu'on recharge le suivi depuis le serveur.
+    Object.keys(pendingSync).forEach(function(key){
+      var op = pendingSync[key];
+      if (!op) return;
+      if (op.kind === 'upsert'){
+        next[key] = { date: op.payload.date, taskId: op.payload.task_id, done: !!op.payload.done, note: op.payload.note || '', blocked: !!op.payload.blocked };
+      } else if (op.kind === 'delete'){
+        delete next[key];
+      }
+    });
     logs = next;
     renderAll();
     checkReminders();
   }
   function loadLogs(){ return loadLogsFor(session ? session.id : null); }
+
+  // ======================= synchronisation hors-ligne =======================
+
+  function updateSyncBadge(){
+    var banner = document.getElementById('pending-sync-banner');
+    if (!banner) return;
+    var n = Object.keys(pendingSync).length;
+    if (n === 0){ banner.hidden = true; return; }
+    banner.hidden = false;
+    document.getElementById('pending-sync-text').textContent =
+      n + (n > 1 ? ' actions' : ' action') + ' pas encore enregistrée' + (n > 1 ? 's' : '') + ' en ligne (pas de réseau) — seront envoyées automatiquement dès que la connexion revient.';
+  }
+
+  function queuePending(key, op){
+    pendingSync[key] = op;
+    savePendingSync();
+    updateSyncBadge();
+    clearTimeout(flushSoonTimer);
+    flushSoonTimer = setTimeout(flushPendingSync, 4000);
+  }
+  function clearPending(key){
+    if (pendingSync[key]){ delete pendingSync[key]; savePendingSync(); updateSyncBadge(); }
+  }
+
+  // Rejoue les changements en attente. Silencieux en cas d'échec (on
+  // retentera plus tard) ; un petit toast confirme seulement quand tout est
+  // enfin synchronisé, pour que l'employé sache que c'est bon.
+  async function flushPendingSync(){
+    if (!sb || flushingSync) return;
+    if (navigator.onLine === false) return;
+    var keys = Object.keys(pendingSync);
+    if (keys.length === 0) return;
+    flushingSync = true;
+    var clearedAny = false;
+    for (var i = 0; i < keys.length; i++){
+      var key = keys[i];
+      var op = pendingSync[key];
+      if (!op) continue;
+      try{
+        var res = (op.kind === 'delete')
+          ? await sb.from('logs').delete().eq('id', key)
+          : await sb.from('logs').upsert(op.payload);
+        if (!res.error){ delete pendingSync[key]; clearedAny = true; }
+      }catch(e){ /* toujours hors-ligne, on retentera plus tard */ }
+    }
+    if (clearedAny){
+      savePendingSync();
+      updateSyncBadge();
+      if (Object.keys(pendingSync).length === 0) toast('Synchronisé.');
+    }
+    flushingSync = false;
+  }
+
+  window.addEventListener('online', flushPendingSync);
+  document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'visible') flushPendingSync(); });
+  document.getElementById('pending-sync-retry').addEventListener('click', flushPendingSync);
 
   // Pour le tableau de bord du patron : l'état fait/pas fait/empêchement d'AUJOURD'HUI,
   // pour tous les employés (une seule requête légère, pas 14 jours).
@@ -674,8 +756,15 @@
       var note = (log && log.note) || '';
       logs[key] = { date: ds, taskId: id, done: true, note: note, blocked: false };
       renderTasks(); renderTracker(); checkReminders();
-      var res = await sb.from('logs').upsert({ id: key, task_id: id, date: ds, done: true, done_at: new Date().toISOString(), employee_id: session.id, note: note || null, blocked: false });
-      if (res.error) toast('Impossible d\'enregistrer.');
+      var payload = { id: key, task_id: id, date: ds, done: true, done_at: new Date().toISOString(), employee_id: session.id, note: note || null, blocked: false };
+      try{
+        var res = await sb.from('logs').upsert(payload);
+        if (res.error){ queuePending(key, { kind:'upsert', payload: payload }); toast('Pas de réseau — sera synchronisé automatiquement.'); }
+        else { clearPending(key); }
+      }catch(e){
+        queuePending(key, { kind:'upsert', payload: payload });
+        toast('Pas de réseau — sera synchronisé automatiquement.');
+      }
       // Si cette tâche est obligatoire, vérifie si tout le monde l'a faite —
       // et si oui, annule l'alerte "pas encore faite" programmée pour le
       // patron, pour éviter une fausse alerte. Silencieux, sans bloquer l'UI.
@@ -686,8 +775,14 @@
     } else {
       delete logs[key];
       renderTasks(); renderTracker(); checkReminders();
-      var res2 = await sb.from('logs').delete().eq('id', key);
-      if (res2.error) toast('Impossible d\'enregistrer.');
+      try{
+        var res2 = await sb.from('logs').delete().eq('id', key);
+        if (res2.error){ queuePending(key, { kind:'delete' }); toast('Pas de réseau — sera synchronisé automatiquement.'); }
+        else { clearPending(key); }
+      }catch(e){
+        queuePending(key, { kind:'delete' });
+        toast('Pas de réseau — sera synchronisé automatiquement.');
+      }
     }
   }
 
@@ -703,16 +798,28 @@
     if (!noteText && !blocked && !done){
       delete logs[key];
       renderTasks(); renderTracker(); checkReminders();
-      var resDel = await sb.from('logs').delete().eq('id', key);
-      if (resDel.error) toast('Impossible d\'enregistrer.');
+      try{
+        var resDel = await sb.from('logs').delete().eq('id', key);
+        if (resDel.error){ queuePending(key, { kind:'delete' }); toast('Pas de réseau — sera synchronisé automatiquement.'); }
+        else { clearPending(key); }
+      }catch(e){
+        queuePending(key, { kind:'delete' });
+        toast('Pas de réseau — sera synchronisé automatiquement.');
+      }
       return;
     }
     logs[key] = { date: ds, taskId: id, done: done, note: noteText, blocked: blocked };
     renderTasks(); renderTracker(); checkReminders();
     var payload = { id: key, task_id: id, date: ds, done: done, employee_id: session.id, note: noteText || null, blocked: blocked };
     if (done) payload.done_at = new Date().toISOString();
-    var res = await sb.from('logs').upsert(payload);
-    if (res.error) toast('Impossible d\'enregistrer.');
+    try{
+      var res = await sb.from('logs').upsert(payload);
+      if (res.error){ queuePending(key, { kind:'upsert', payload: payload }); toast('Pas de réseau — sera synchronisé automatiquement.'); }
+      else { clearPending(key); }
+    }catch(e){
+      queuePending(key, { kind:'upsert', payload: payload });
+      toast('Pas de réseau — sera synchronisé automatiquement.');
+    }
   }
 
   async function deleteEmployee(id){
@@ -1236,6 +1343,7 @@
     renderHeaderDate();
     refreshNotifBanner();
     renderAll();
+    updateSyncBadge();
 
     if (!CONFIGURED){
       toast('Configuration à terminer dans config.js.');
