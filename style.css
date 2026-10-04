@@ -279,6 +279,7 @@ nav#tabbar{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;
 .admin-row-del{flex:0 0 auto;width:32px;height:32px;display:flex;align-items:center;justify-content:center;color:var(--fg-faint);border-radius:50%;}
 .admin-row-del.confirm{color:var(--fg);border:1px solid var(--fg);font-size:9px;font-weight:700;letter-spacing:0.04em;width:auto;padding:0 8px;}
 .admin-add-btn{width:100%;margin-top:2px;}
+.export-row{margin:0;}
 
 /* ---------- mandatory-task employee picker ---------- */
 .mt-select-all{width:auto!important;flex:0 0 auto;padding:7px 14px;font-size:11.5px;margin-bottom:10px;}
