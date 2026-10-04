@@ -676,6 +676,13 @@
       renderTasks(); renderTracker(); checkReminders();
       var res = await sb.from('logs').upsert({ id: key, task_id: id, date: ds, done: true, done_at: new Date().toISOString(), employee_id: session.id, note: note || null, blocked: false });
       if (res.error) toast('Impossible d\'enregistrer.');
+      // Si cette tâche est obligatoire, vérifie si tout le monde l'a faite —
+      // et si oui, annule l'alerte "pas encore faite" programmée pour le
+      // patron, pour éviter une fausse alerte. Silencieux, sans bloquer l'UI.
+      var t = tasks[id];
+      if (t && t.isMandatory){
+        fetch('/api/cancel-overdue-alert?task_id=' + encodeURIComponent(id) + '&date=' + encodeURIComponent(ds)).catch(function(){});
+      }
     } else {
       delete logs[key];
       renderTasks(); renderTracker(); checkReminders();
@@ -1113,6 +1120,77 @@
     renderAdminTasks();
     closeSheetMt();
   });
+
+  // ======================= export CSV (patron) =======================
+
+  // Met entre guillemets les champs texte libre (note, noms) si besoin,
+  // pour un CSV valide même si le texte contient un point-virgule ou des
+  // guillemets.
+  function csvField(v){
+    v = (v === null || v === undefined) ? '' : String(v);
+    if (/[;"\n]/.test(v)) v = '"' + v.replace(/"/g,'""') + '"';
+    return v;
+  }
+
+  // Exporte l'historique (table "logs") du mois en cours sous forme de
+  // fichier CSV téléchargeable, pour que le patron puisse garder une trace
+  // ou la partager (contrôle sanitaire, etc). Ne concerne que les lignes
+  // où un employé a coché une tâche et/ou laissé une note/un empêchement —
+  // les tâches jamais touchées n'apparaissent pas (pas de ligne "non fait").
+  async function exportMonthCsv(btn){
+    if (!sb || !session || !session.is_admin) return;
+    if (btn.classList.contains('is-syncing')) return;
+    btn.classList.add('is-syncing');
+    var now = new Date();
+    var start = dateKey(new Date(now.getFullYear(), now.getMonth(), 1));
+    var end = dateKey(new Date(now.getFullYear(), now.getMonth()+1, 0));
+    var res = await sb.from('logs').select('*').gte('date', start).lte('date', end);
+    btn.classList.remove('is-syncing');
+    if (res.error){ toast('Export impossible pour le moment.'); return; }
+
+    var rows = (res.data || []).slice().sort(function(a,b){
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      var ta = (tasks[a.task_id] && tasks[a.task_id].time) || '';
+      var tb = (tasks[b.task_id] && tasks[b.task_id].time) || '';
+      if (ta !== tb) return ta < tb ? -1 : 1;
+      var na = (employees[a.employee_id] && employees[a.employee_id].name) || '';
+      var nb = (employees[b.employee_id] && employees[b.employee_id].name) || '';
+      return na.localeCompare(nb, 'fr');
+    });
+
+    var lines = ['Date;Heure;Employe;Tache;Obligatoire;Fait;Empechement;Note'];
+    rows.forEach(function(row){
+      var t = tasks[row.task_id];
+      var e = employees[row.employee_id];
+      lines.push([
+        row.date,
+        t ? t.time : '',
+        csvField(e ? e.name : '(employé supprimé)'),
+        csvField(t ? t.title : '(tâche supprimée)'),
+        t && t.isMandatory ? 'Oui' : 'Non',
+        row.done ? 'Oui' : 'Non',
+        row.blocked ? 'Oui' : 'Non',
+        csvField(row.note || '')
+      ].join(';'));
+    });
+
+    var csv = '\uFEFF' + lines.join('\r\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'frimor-task-' + start.slice(0,7) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+
+    toast(rows.length
+      ? (rows.length + ' ligne' + (rows.length > 1 ? 's' : '') + ' exportée' + (rows.length > 1 ? 's' : '') + '.')
+      : 'Aucune donnée à exporter pour ce mois-ci.');
+  }
+
+  document.getElementById('export-history').addEventListener('click', function(){ exportMonthCsv(this); });
 
   // ======================= note / empêchement (employé) =======================
 
