@@ -244,7 +244,7 @@ nav#tabbar{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;
 .user-chip svg{width:13px;height:13px;}
 
 /* ---------- tableau de bord (patron) ---------- */
-.dash-row{display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid var(--line);border-radius:14px;background:var(--surface);margin-bottom:10px;}
+.dash-row{display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid var(--line);border-radius:14px;background:var(--surface);margin-bottom:20px;}
 .dash-row.alert{border-color:var(--danger);}
 .dash-row-main{flex:1 1 auto;min-width:0;}
 .dash-row-name{font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
