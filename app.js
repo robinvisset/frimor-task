@@ -15,6 +15,10 @@
   var employees = {};        // id -> {id,name,is_admin}
   var assignees = {};        // taskId -> Set(employeeId), pour les tâches obligatoires
   var loginSelectedId = null;
+  var viewAsId = null;       // id de l'employé consulté par le patron (lecture seule), ou null = vue de soi-même
+
+  function viewingEmployeeId(){ return viewAsId || (session && session.id); }
+  function isReadOnlyView(){ return !!viewAsId; }
 
   var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days},ownerEmployeeId,isMandatory}
   var logs = {};    // "date_taskId_employeeId" -> {date,taskId,done}
@@ -56,7 +60,7 @@
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
     });
   }
-  function logKey(taskId, ds){ return ds + "_" + taskId + "_" + (session ? session.id : ''); }
+  function logKey(taskId, ds){ return ds + "_" + taskId + "_" + (viewingEmployeeId() || ''); }
 
   function toast(msg){
     var t = document.getElementById('toast');
@@ -171,9 +175,10 @@
 
   function allTaskList(){
     if (!session) return [];
+    var eid = viewingEmployeeId();
     return Object.values(tasks).filter(function(t){
-      if (t.isMandatory) return assignees[t.id] && assignees[t.id].has(session.id);
-      return t.ownerEmployeeId === session.id;
+      if (t.isMandatory) return assignees[t.id] && assignees[t.id].has(eid);
+      return t.ownerEmployeeId === eid;
     }).sort(function(a,b){ return a.time.localeCompare(b.time); });
   }
   function todayTaskList(){
@@ -206,11 +211,15 @@
     var container = document.getElementById('task-list');
     var doneCount = 0;
 
+    var ro = isReadOnlyView();
+
     if (list.length === 0){
       var hasAnyTask = allTaskList().length > 0;
-      container.innerHTML = hasAnyTask
-        ? '<div class="empty-state">Aucune tâche prévue aujourd\'hui.<br>Regarde l\'onglet Planning pour voir la semaine.</div>'
-        : '<div class="empty-state">Aucune tâche aujourd\'hui.<br>Ajoute ta première tâche avec le bouton +.</div>';
+      container.innerHTML = ro
+        ? '<div class="empty-state">Aucune tâche prévue aujourd\'hui pour cet employé.</div>'
+        : (hasAnyTask
+          ? '<div class="empty-state">Aucune tâche prévue aujourd\'hui.<br>Regarde l\'onglet Planning pour voir la semaine.</div>'
+          : '<div class="empty-state">Aucune tâche aujourd\'hui.<br>Ajoute ta première tâche avec le bouton +.</div>');
       document.getElementById('today-count').textContent = '0/0';
       return;
     }
@@ -228,7 +237,7 @@
       var delIsConfirm = pendingDelete === t.id;
 
       return '<div class="'+cls+'" data-id="'+t.id+'">'
-        + '<button class="check" data-action="toggle">'
+        + '<button class="check"'+(ro ? '' : ' data-action="toggle"')+'>'
           + '<svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
         + '</button>'
         + '<div class="task-main">'
@@ -241,7 +250,7 @@
           + '</span>'
         + '</div>'
         + '<span class="task-time mono">'+t.time+'</span>'
-        + (t.isMandatory ? '' : '<button class="task-del'+(delIsConfirm?' confirm':'')+'" data-action="delete">'
+        + (t.isMandatory || ro ? '' : '<button class="task-del'+(delIsConfirm?' confirm':'')+'" data-action="delete">'
           + (delIsConfirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
           + '</button>')
         + '</div>';
@@ -319,6 +328,7 @@
     var today = new Date();
     var html = '';
     var any = false;
+    var ro = isReadOnlyView();
 
     for (var i = 0; i < 14; i++){
       var d = addDays(today, i);
@@ -335,7 +345,7 @@
           + (t.isMandatory ? '<span class="tag">obligatoire</span>' : '')
           + '</div>';
       }).join('');
-      var addRow = '<button type="button" class="plan-add" data-day="'+d.getDay()+'">'
+      var addRow = ro ? '' : '<button type="button" class="plan-add" data-day="'+d.getDay()+'">'
         + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>'
         + 'Ajouter une tâche ce jour</button>';
       html += '<div class="day-group">'
@@ -358,6 +368,7 @@
   // ======================= reminders (pendant que l'appli est ouverte) =======================
 
   function checkReminders(){
+    if (isReadOnlyView()) return;
     var now = new Date();
     var ds = dateKey(now);
     var changed = false;
@@ -558,17 +569,21 @@
     await seedExamplesIfEmpty();
   }
 
-  async function loadLogs(){
-    if (!sb || !session) return;
+  async function loadLogsFor(employeeId){
+    if (!sb || !employeeId) return;
     var cutoff = dateKey(addDays(new Date(), -13));
-    var res = await sb.from('logs').select('*').eq('employee_id', session.id).gte('date', cutoff);
+    var res = await sb.from('logs').select('*').eq('employee_id', employeeId).gte('date', cutoff);
     if (res.error){ toast('Erreur de chargement du suivi.'); return; }
+    // Si la vue a changé pendant le chargement (ex. le patron a déjà quitté
+    // ou changé d'employé consulté), on ignore ce résultat devenu obsolète.
+    if (employeeId !== viewingEmployeeId()) return;
     var next = {};
     (res.data || []).forEach(function(row){ next[row.id] = { date: row.date, taskId: row.task_id, done: !!row.done }; });
     logs = next;
     renderAll();
     checkReminders();
   }
+  function loadLogs(){ return loadLogsFor(session ? session.id : null); }
 
   async function seedExamplesIfEmpty(){
     if (!session) return;
@@ -584,7 +599,7 @@
   }
 
   async function addTask(title, time, recurrence){
-    if (!sb || !session) return;
+    if (!sb || !session || isReadOnlyView()) return;
     var res = await sb.from('tasks').insert({
       title: title, time: time,
       recurrence_type: recurrence.type,
@@ -598,7 +613,7 @@
   }
 
   async function deleteTask(id){
-    if (!sb) return;
+    if (!sb || isReadOnlyView()) return;
     var t = tasks[id];
     if (t && t.isMandatory && !(session && session.is_admin)){ toast('Seul le patron peut supprimer une tâche obligatoire.'); return; }
     delete tasks[id];
@@ -610,7 +625,7 @@
   }
 
   async function toggleTask(id){
-    if (!sb || !session) return;
+    if (!sb || !session || isReadOnlyView()) return;
     var ds = dateKey();
     var key = logKey(id, ds);
     var log = logs[key];
@@ -641,7 +656,7 @@
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, function(){ loadTasks(); })
       .subscribe();
     sb.channel('logs-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, function(){ loadLogs(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, function(){ loadLogsFor(viewingEmployeeId()); })
       .subscribe();
     sb.channel('employees-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, function(){ loadEmployees(); })
@@ -671,9 +686,10 @@
 
   document.querySelectorAll('.tab').forEach(function(btn){
     btn.addEventListener('click', function(){
+      var tab = btn.dataset.tab;
+      if (tab === 'admin' && viewAsId){ exitViewAs(); }
       document.querySelectorAll('.tab').forEach(function(b){ b.classList.remove('active'); });
       btn.classList.add('active');
-      var tab = btn.dataset.tab;
       document.getElementById('view-tasks').hidden = tab !== 'tasks';
       document.getElementById('view-planning').hidden = tab !== 'planning';
       document.getElementById('view-tracker').hidden = tab !== 'tracker';
@@ -681,6 +697,41 @@
       if (tab === 'admin'){ renderAdminEmployees(); renderAdminTasks(); }
     });
   });
+
+  // ======================= vue "consulter un employé" (patron, lecture seule) =======================
+
+  function enterViewAs(employeeId){
+    var emp = employees[employeeId];
+    if (!emp || !session || !session.is_admin) return;
+    viewAsId = employeeId;
+    pendingDelete = null;
+
+    document.getElementById('view-as-text').textContent = 'Vue de ' + emp.name + ' — lecture seule';
+    document.getElementById('view-as-banner').hidden = false;
+    document.getElementById('fab').hidden = true;
+
+    document.querySelectorAll('.tab').forEach(function(b){ b.classList.remove('active'); });
+    var tasksTabBtn = document.querySelector('.tab[data-tab="tasks"]');
+    if (tasksTabBtn) tasksTabBtn.classList.add('active');
+    document.getElementById('view-tasks').hidden = false;
+    document.getElementById('view-planning').hidden = true;
+    document.getElementById('view-tracker').hidden = true;
+    document.getElementById('view-admin').hidden = true;
+
+    renderAll();
+    loadLogsFor(employeeId);
+  }
+
+  function exitViewAs(){
+    if (!viewAsId) return;
+    viewAsId = null;
+    pendingDelete = null;
+    document.getElementById('view-as-banner').hidden = true;
+    document.getElementById('fab').hidden = false;
+    loadLogs();
+    renderAll();
+  }
+  document.getElementById('view-as-exit').addEventListener('click', exitViewAs);
 
   var sheet = document.getElementById('sheet');
   var sheetBackdrop = document.getElementById('sheet-backdrop');
@@ -756,9 +807,13 @@
     if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun employé pour l\'instant.</div>'; return; }
     box.innerHTML = list.map(function(e){
       var confirm = pendingDeleteEmp === e.id;
+      var isSelf = session && e.id === session.id;
       return '<div class="admin-row" data-id="'+e.id+'">'
         + '<div class="admin-row-main"><div class="admin-row-title">'+escapeHtml(e.name)+'</div>'
         + (e.is_admin ? '<div class="admin-row-meta">Administrateur</div>' : '') + '</div>'
+        + (isSelf ? '' : '<button class="admin-row-view" data-action="view-employee" aria-label="Voir ses tâches">'
+          + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>'
+          + '</button>')
         + (e.is_admin ? '' : '<button class="admin-row-del'+(confirm?' confirm':'')+'" data-action="delete-employee">'
           + (confirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
           + '</button>')
@@ -791,7 +846,9 @@
     var row = e.target.closest('.admin-row'); if (!row) return;
     var id = row.dataset.id;
     var action = e.target.closest('[data-action]'); if (!action) return;
-    if (action.dataset.action === 'delete-employee'){
+    if (action.dataset.action === 'view-employee'){
+      enterViewAs(id);
+    } else if (action.dataset.action === 'delete-employee'){
       if (pendingDeleteEmp === id){ pendingDeleteEmp = null; deleteEmployee(id); }
       else {
         pendingDeleteEmp = id; renderAdminEmployees();
