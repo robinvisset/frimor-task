@@ -20,7 +20,7 @@
   function viewingEmployeeId(){ return viewAsId || (session && session.id); }
   function isReadOnlyView(){ return !!viewAsId; }
 
-  var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days},ownerEmployeeId,isMandatory}
+  var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days,date},ownerEmployeeId,isMandatory}
   var logs = {};    // "date_taskId_employeeId" -> {date,taskId,done,note,blocked}
   var todayLogsAll = {}; // pour le tableau de bord patron : "date_taskId_employeeId" -> done, pour TOUS les employés, jour courant
   var dueSoon = new Set();
@@ -41,6 +41,12 @@
 
   var DAY_NAMES = {0:'DIM',1:'LUN',2:'MAR',3:'MER',4:'JEU',5:'VEN',6:'SAM'};
   var REMINDER_LEAD_MIN = 20;
+  var FREQ_DATE_HINTS = {
+    date: "Cette tâche n'aura lieu qu'à cette date, une seule fois.",
+    monthly: "Cette tâche reviendra chaque mois, le même jour du mois.",
+    quarterly: "Cette tâche reviendra tous les 3 mois, le même jour du mois.",
+    annual: "Cette tâche reviendra chaque année, à la même date."
+  };
 
   var EXAMPLE_TASKS = [
     {title:"Relevé des températures chambres froides", time:"08:00", recurrence_type:'daily', recurrence_days:[]},
@@ -58,15 +64,43 @@
     return new Date(+ymd[0], +ymd[1]-1, +ymd[2], +hm[0], +hm[1], 0, 0);
   }
   function fmtDayLabel(d){ return d.toLocaleDateString('fr-FR',{weekday:'narrow'}).toUpperCase(); }
+  function fmtDateShort(ds){ var d = dateFromKey(ds); return pad(d.getDate())+'/'+pad(d.getMonth()+1)+'/'+d.getFullYear(); }
+  function fmtDateShortNoYear(ds){ var d = dateFromKey(ds); return pad(d.getDate())+'/'+pad(d.getMonth()+1); }
+  function dayOfMonthLabel(ds){ return dateFromKey(ds).getDate(); }
+  function daysInMonth(y, m){ return new Date(y, m+1, 0).getDate(); } // m : 0-indexé
+  // Vérifie si `d` tombe sur le même jour-du-mois que `anchor`, tous les
+  // `everyNMonths` mois à partir de `anchor` (mensuel=1, trimestriel=3,
+  // annuel=12). Si le mois de `d` a moins de jours que le jour d'ancrage
+  // (ex. ancrage le 31, mois de 30 jours), on retombe sur le dernier jour du
+  // mois — pour ne jamais "sauter" un mois silencieusement.
+  function matchesPeriodic(anchor, d, everyNMonths){
+    var a0 = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+    var d0 = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (d0 < a0) return false;
+    var diffMonths = (d0.getFullYear()-a0.getFullYear())*12 + (d0.getMonth()-a0.getMonth());
+    if (diffMonths < 0 || diffMonths % everyNMonths !== 0) return false;
+    var lastDay = daysInMonth(d0.getFullYear(), d0.getMonth());
+    var targetDay = Math.min(a0.getDate(), lastDay);
+    return d0.getDate() === targetDay;
+  }
   function isScheduled(task, date){
     var rec = task.recurrence || {type:'daily'};
-    if (rec.type !== 'days') return true;
-    return (rec.days || []).indexOf(date.getDay()) !== -1;
+    if (rec.type === 'days') return (rec.days || []).indexOf(date.getDay()) !== -1;
+    if (rec.type === 'date') return !!rec.date && dateKey(date) === rec.date;
+    if (rec.type === 'monthly') return !!rec.date && matchesPeriodic(dateFromKey(rec.date), date, 1);
+    if (rec.type === 'quarterly') return !!rec.date && matchesPeriodic(dateFromKey(rec.date), date, 3);
+    if (rec.type === 'annual') return !!rec.date && matchesPeriodic(dateFromKey(rec.date), date, 12);
+    return true; // daily
   }
   function freqLabel(task){
     var rec = task.recurrence;
-    if (!rec || rec.type !== 'days') return '';
-    return rec.days.slice().sort().map(function(d){ return DAY_NAMES[d]; }).join('·');
+    if (!rec) return '';
+    if (rec.type === 'days') return (rec.days || []).slice().sort().map(function(d){ return DAY_NAMES[d]; }).join('·');
+    if (rec.type === 'date') return rec.date ? fmtDateShort(rec.date) : '';
+    if (rec.type === 'monthly') return rec.date ? ('tous les mois · le '+dayOfMonthLabel(rec.date)) : '';
+    if (rec.type === 'quarterly') return rec.date ? ('tous les 3 mois · le '+dayOfMonthLabel(rec.date)) : '';
+    if (rec.type === 'annual') return rec.date ? ('chaque année · '+fmtDateShortNoYear(rec.date)) : '';
+    return '';
   }
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, function(c){
@@ -262,6 +296,9 @@
       + '<span class="task-time mono">'+t.time+'</span>'
       + (ro ? '' : '<button class="task-note'+((note||blocked)?' has-note':'')+'" data-action="note" aria-label="Note / signaler un empêchement">'
         + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+        + '</button>')
+      + (t.isMandatory || ro ? '' : '<button class="task-edit" data-action="edit" aria-label="Modifier la tâche">'
+        + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
         + '</button>')
       + (t.isMandatory || ro ? '' : '<button class="task-del'+(delIsConfirm?' confirm':'')+'" data-action="delete">'
         + (delIsConfirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
@@ -573,9 +610,17 @@
       time: row.time,
       createdAt: row.created_at,
       example: !!row.example,
-      recurrence: { type: row.recurrence_type || 'daily', days: row.recurrence_days || [] },
+      recurrence: { type: row.recurrence_type || 'daily', days: row.recurrence_days || [], date: row.recurrence_date || null },
       ownerEmployeeId: row.owner_employee_id || null,
       isMandatory: !!row.is_mandatory
+    };
+  }
+  var DATED_RECURRENCE_TYPES = ['date','monthly','quarterly','annual'];
+  function recurrenceToRow(recurrence){
+    return {
+      recurrence_type: recurrence.type,
+      recurrence_days: recurrence.type === 'days' ? recurrence.days : [],
+      recurrence_date: DATED_RECURRENCE_TYPES.indexOf(recurrence.type) !== -1 ? recurrence.date : null
     };
   }
 
@@ -756,16 +801,36 @@
 
   async function addTask(title, time, recurrence){
     if (!sb || !session || isReadOnlyView()) return;
-    var res = await sb.from('tasks').insert({
+    var res = await sb.from('tasks').insert(Object.assign({
       title: title, time: time,
-      recurrence_type: recurrence.type,
-      recurrence_days: recurrence.type === 'days' ? recurrence.days : [],
       owner_employee_id: session.id,
       is_mandatory: false
-    }).select();
+    }, recurrenceToRow(recurrence))).select();
     if (res.error){ toast('Ajout impossible.'); return; }
     var row = res.data && res.data[0];
     if (row){ tasks[row.id] = rowToTask(row); renderAll(); }
+  }
+
+  // Modifie une tâche existante en place (perso ou obligatoire — pour les
+  // obligatoires, voir aussi mt-save qui gère en plus les destinataires).
+  // Comme l'heure ou la fréquence peuvent changer, on annule d'abord les
+  // rappels déjà programmés pour cette tâche puis on relance une synchro,
+  // sinon un ancien rappel (à la mauvaise heure) pourrait sonner quand même.
+  async function updateTask(id, title, time, recurrence){
+    if (!sb || isReadOnlyView()) return;
+    var res = await sb.from('tasks').update(Object.assign({
+      title: title, time: time
+    }, recurrenceToRow(recurrence))).eq('id', id).select();
+    if (res.error){ toast('Modification impossible.'); return; }
+    var row = res.data && res.data[0];
+    if (row){
+      tasks[row.id] = rowToTask(row);
+      renderAll();
+      if (session && session.is_admin) renderAdminTasks();
+    }
+    fetch('/api/cancel-task-notifications?task_id=' + encodeURIComponent(id)).then(function(){
+      fetch('/api/sync-notifications').catch(function(){});
+    }).catch(function(){});
   }
 
   async function deleteTask(id){
@@ -973,6 +1038,7 @@
     if (!action) return;
     if (action.dataset.action === 'toggle'){ pendingDelete = null; toggleTask(id); }
     else if (action.dataset.action === 'note'){ openNoteSheet(id); }
+    else if (action.dataset.action === 'edit'){ var t = tasks[id]; if (t) openSheetEdit(t); }
     else if (action.dataset.action === 'delete'){
       if (pendingDelete === id){ pendingDelete = null; deleteTask(id); }
       else {
@@ -1034,13 +1100,20 @@
   var sheet = document.getElementById('sheet');
   var sheetBackdrop = document.getElementById('sheet-backdrop');
   var dayPicker = document.getElementById('day-picker');
+  var datePicker = document.getElementById('date-picker');
+  var dateHint = document.getElementById('date-hint');
   var freqMode = 'daily';
   var selectedDays = new Set();
+  var editingTaskId = null;
+  var DATED_FREQ_MODES = ['date','monthly','quarterly','annual'];
 
   function setFreqMode(mode){
     freqMode = mode;
     document.querySelectorAll('#freq-seg .seg-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.freq === mode); });
     dayPicker.hidden = mode !== 'days';
+    var needsDate = DATED_FREQ_MODES.indexOf(mode) !== -1;
+    datePicker.hidden = !needsDate;
+    if (needsDate) dateHint.textContent = FREQ_DATE_HINTS[mode] || '';
   }
   document.querySelectorAll('#freq-seg .seg-btn').forEach(function(b){ b.addEventListener('click', function(){ setFreqMode(b.dataset.freq); }); });
   document.querySelectorAll('#day-picker .day-chip').forEach(function(chip){
@@ -1052,8 +1125,12 @@
   });
 
   function openSheet(presetDay){
+    editingTaskId = null;
+    document.getElementById('sheet-title').textContent = 'Nouvelle tâche';
+    document.getElementById('f-save').textContent = 'Ajouter';
     document.getElementById('f-title').value = '';
     document.getElementById('f-time').value = '09:00';
+    document.getElementById('f-date').value = '';
     selectedDays = new Set();
     document.querySelectorAll('#day-picker .day-chip').forEach(function(c){ c.classList.remove('active'); });
     if (presetDay !== undefined && presetDay !== null){
@@ -1065,7 +1142,25 @@
     sheet.classList.add('open'); sheetBackdrop.classList.add('open');
     setTimeout(function(){ document.getElementById('f-title').focus(); }, 260);
   }
-  function closeSheet(){ sheet.classList.remove('open'); sheetBackdrop.classList.remove('open'); }
+
+  // Ouvre le formulaire pré-rempli pour MODIFIER une tâche perso existante
+  // (contrairement à openSheet, qui crée toujours une tâche neuve).
+  function openSheetEdit(task){
+    editingTaskId = task.id;
+    document.getElementById('sheet-title').textContent = 'Modifier la tâche';
+    document.getElementById('f-save').textContent = 'Enregistrer';
+    document.getElementById('f-title').value = task.title;
+    document.getElementById('f-time').value = task.time;
+    var rec = task.recurrence || {type:'daily'};
+    selectedDays = new Set(rec.type === 'days' ? rec.days : []);
+    document.querySelectorAll('#day-picker .day-chip').forEach(function(c){
+      c.classList.toggle('active', selectedDays.has(+c.dataset.day));
+    });
+    document.getElementById('f-date').value = rec.date || '';
+    setFreqMode(rec.type || 'daily');
+    sheet.classList.add('open'); sheetBackdrop.classList.add('open');
+  }
+  function closeSheet(){ sheet.classList.remove('open'); sheetBackdrop.classList.remove('open'); editingTaskId = null; }
   document.getElementById('fab').addEventListener('click', function(){ openSheet(); });
   document.getElementById('planning-list').addEventListener('click', function(e){
     var btn = e.target.closest('.plan-add');
@@ -1091,8 +1186,13 @@
     if (freqMode === 'days'){
       if (selectedDays.size === 0){ toast('Choisis au moins un jour.'); return; }
       recurrence = { type:'days', days: Array.from(selectedDays) };
+    } else if (DATED_FREQ_MODES.indexOf(freqMode) !== -1){
+      var dateVal = document.getElementById('f-date').value;
+      if (!dateVal){ toast('Choisis une date.'); return; }
+      recurrence = { type: freqMode, date: dateVal };
     } else { recurrence = { type:'daily' }; }
-    addTask(title, time, recurrence);
+    if (editingTaskId){ updateTask(editingTaskId, title, time, recurrence); }
+    else { addTask(title, time, recurrence); }
     closeSheet();
   });
 
@@ -1190,9 +1290,13 @@
     box.innerHTML = list.map(function(t){
       var names = Array.from(assignees[t.id] || []).map(function(id){ return employees[id] ? employees[id].name : '?'; }).join(', ');
       var confirm = pendingDeleteMTask === t.id;
+      var freq = freqLabel(t);
       return '<div class="admin-row" data-id="'+t.id+'">'
         + '<div class="admin-row-main"><div class="admin-row-title">'+escapeHtml(t.title)+' · '+t.time+'</div>'
-        + '<div class="admin-row-meta">'+(names || 'Personne')+'</div></div>'
+        + '<div class="admin-row-meta">'+(names || 'Personne')+(freq ? ' · '+escapeHtml(freq) : '')+'</div></div>'
+        + '<button class="admin-row-edit" data-action="edit-mtask" aria-label="Modifier cette tâche">'
+          + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+        + '</button>'
         + '<button class="admin-row-dup" data-action="duplicate-mtask" aria-label="Dupliquer cette tâche">'
           + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
         + '</button>'
@@ -1258,7 +1362,10 @@
     var action = e.target.closest('[data-action]'); if (!action) return;
     if (action.dataset.action === 'duplicate-mtask'){
       var t = tasks[id];
-      if (t) openMtSheet(t);
+      if (t) openMtSheet(t, false);
+    } else if (action.dataset.action === 'edit-mtask'){
+      var t2 = tasks[id];
+      if (t2) openMtSheet(t2, true);
     } else if (action.dataset.action === 'delete-mtask'){
       if (pendingDeleteMTask === id){ pendingDeleteMTask = null; deleteTask(id); }
       else {
@@ -1306,14 +1413,20 @@
   var sheetMt = document.getElementById('sheet-mtask');
   var sheetMtBackdrop = document.getElementById('sheet-mtask-backdrop');
   var mtDayPicker = document.getElementById('mt-day-picker');
+  var mtDatePicker = document.getElementById('mt-date-picker');
+  var mtDateHint = document.getElementById('mt-date-hint');
   var mtFreqMode = 'daily';
   var mtSelectedDays = new Set();
   var mtSelectedEmployees = new Set();
+  var mtEditingTaskId = null;
 
   function setMtFreqMode(mode){
     mtFreqMode = mode;
     document.querySelectorAll('#mt-freq-seg .seg-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.freq === mode); });
     mtDayPicker.hidden = mode !== 'days';
+    var needsDate = DATED_FREQ_MODES.indexOf(mode) !== -1;
+    mtDatePicker.hidden = !needsDate;
+    if (needsDate) mtDateHint.textContent = FREQ_DATE_HINTS[mode] || '';
   }
   document.querySelectorAll('#mt-freq-seg .seg-btn').forEach(function(b){ b.addEventListener('click', function(){ setMtFreqMode(b.dataset.freq); }); });
   document.querySelectorAll('#mt-day-picker .day-chip').forEach(function(chip){
@@ -1345,25 +1458,31 @@
     renderMtEmployeePicker();
   });
 
-  function closeSheetMt(){ sheetMt.classList.remove('open'); sheetMtBackdrop.classList.remove('open'); }
+  function closeSheetMt(){ sheetMt.classList.remove('open'); sheetMtBackdrop.classList.remove('open'); mtEditingTaskId = null; }
 
-  // prefill : si fourni (tâche existante), prépare le formulaire pour une
-  // DUPLICATION — "Dupliquer" crée toujours une nouvelle tâche, jamais une
+  // prefill : tâche existante pour pré-remplir le formulaire (ou null pour
+  // un formulaire vide). editing=true -> "Modifier" : enregistre les
+  // changements sur la tâche d'origine. editing=false (ou prefill=null) ->
+  // "Créer"/"Dupliquer" : crée toujours une tâche neuve, jamais une
   // modification de l'originale.
-  function openMtSheet(prefill){
-    document.getElementById('mt-title').value = prefill ? (prefill.title + ' (copie)') : '';
+  function openMtSheet(prefill, editing){
+    mtEditingTaskId = (editing && prefill) ? prefill.id : null;
+    document.getElementById('mt-sheet-title').textContent = mtEditingTaskId ? 'Modifier la tâche obligatoire' : 'Tâche obligatoire';
+    document.getElementById('mt-save').textContent = mtEditingTaskId ? 'Enregistrer' : 'Créer';
+    document.getElementById('mt-title').value = prefill ? (editing ? prefill.title : (prefill.title + ' (copie)')) : '';
     document.getElementById('mt-time').value = prefill ? prefill.time : '09:00';
-    var isDays = prefill && prefill.recurrence && prefill.recurrence.type === 'days';
-    mtSelectedDays = new Set(isDays ? prefill.recurrence.days : []);
+    var rec = (prefill && prefill.recurrence) || {type:'daily'};
+    mtSelectedDays = new Set(rec.type === 'days' ? rec.days : []);
     mtSelectedEmployees = new Set(prefill ? Array.from(assignees[prefill.id] || []) : []);
     document.querySelectorAll('#mt-day-picker .day-chip').forEach(function(c){
       c.classList.toggle('active', mtSelectedDays.has(+c.dataset.day));
     });
-    setMtFreqMode(isDays ? 'days' : 'daily');
+    document.getElementById('mt-date').value = rec.date || '';
+    setMtFreqMode(rec.type || 'daily');
     renderMtEmployeePicker();
     sheetMt.classList.add('open'); sheetMtBackdrop.classList.add('open');
   }
-  document.getElementById('admin-add-task').addEventListener('click', function(){ openMtSheet(null); });
+  document.getElementById('admin-add-task').addEventListener('click', function(){ openMtSheet(null, false); });
   document.getElementById('mt-cancel').addEventListener('click', closeSheetMt);
   sheetMtBackdrop.addEventListener('click', closeSheetMt);
 
@@ -1376,25 +1495,50 @@
     if (mtFreqMode === 'days'){
       if (mtSelectedDays.size === 0){ toast('Choisis au moins un jour.'); return; }
       recurrence = { type:'days', days: Array.from(mtSelectedDays) };
+    } else if (DATED_FREQ_MODES.indexOf(mtFreqMode) !== -1){
+      var dateVal = document.getElementById('mt-date').value;
+      if (!dateVal){ toast('Choisis une date.'); return; }
+      recurrence = { type: mtFreqMode, date: dateVal };
     } else { recurrence = { type:'daily' }; }
 
-    var res = await sb.from('tasks').insert({
-      title: title, time: time,
-      recurrence_type: recurrence.type,
-      recurrence_days: recurrence.type === 'days' ? recurrence.days : [],
-      owner_employee_id: null,
-      is_mandatory: true
-    }).select();
-    if (res.error || !res.data || !res.data[0]){ toast('Création impossible.'); return; }
-    var row = res.data[0];
-    tasks[row.id] = rowToTask(row);
+    var editingId = mtEditingTaskId;
 
-    var assigneeRows = Array.from(mtSelectedEmployees).map(function(empId){ return { task_id: row.id, employee_id: empId }; });
-    var res2 = await sb.from('task_assignees').insert(assigneeRows);
-    if (res2.error){ toast('Tâche créée, mais erreur sur les destinataires.'); }
-    else { toast('Tâche obligatoire créée.'); }
+    if (editingId){
+      var res = await sb.from('tasks').update(Object.assign({ title: title, time: time }, recurrenceToRow(recurrence))).eq('id', editingId).select();
+      if (res.error || !res.data || !res.data[0]){ toast('Modification impossible.'); return; }
+      var row = res.data[0];
+      tasks[row.id] = rowToTask(row);
 
-    assignees[row.id] = new Set(Array.from(mtSelectedEmployees));
+      var currentIds = Array.from(assignees[editingId] || []);
+      var wantedIds = Array.from(mtSelectedEmployees);
+      var toAdd = wantedIds.filter(function(eId){ return currentIds.indexOf(eId) === -1; });
+      var toRemove = currentIds.filter(function(eId){ return wantedIds.indexOf(eId) === -1; });
+      if (toRemove.length) await sb.from('task_assignees').delete().eq('task_id', editingId).in('employee_id', toRemove);
+      if (toAdd.length) await sb.from('task_assignees').insert(toAdd.map(function(eId){ return { task_id: editingId, employee_id: eId }; }));
+      assignees[editingId] = new Set(wantedIds);
+
+      toast('Tâche obligatoire modifiée.');
+      fetch('/api/cancel-task-notifications?task_id=' + encodeURIComponent(editingId)).then(function(){
+        fetch('/api/sync-notifications').catch(function(){});
+      }).catch(function(){});
+    } else {
+      var res2 = await sb.from('tasks').insert(Object.assign({
+        title: title, time: time,
+        owner_employee_id: null,
+        is_mandatory: true
+      }, recurrenceToRow(recurrence))).select();
+      if (res2.error || !res2.data || !res2.data[0]){ toast('Création impossible.'); return; }
+      var row2 = res2.data[0];
+      tasks[row2.id] = rowToTask(row2);
+
+      var assigneeRows = Array.from(mtSelectedEmployees).map(function(empId){ return { task_id: row2.id, employee_id: empId }; });
+      var res3 = await sb.from('task_assignees').insert(assigneeRows);
+      if (res3.error){ toast('Tâche créée, mais erreur sur les destinataires.'); }
+      else { toast('Tâche obligatoire créée.'); }
+
+      assignees[row2.id] = new Set(Array.from(mtSelectedEmployees));
+    }
+
     renderAll();
     renderAdminTasks();
     closeSheetMt();
