@@ -18,6 +18,9 @@ const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
 const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID;
 const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY;
 const REMINDER_LEAD_MIN = 20;
+// Délai après l'heure prévue d'une tâche OBLIGATOIRE avant d'alerter le
+// patron si elle n'est toujours pas faite (voir plus bas, "alerte patron").
+const OVERDUE_ALERT_DELAY_MIN = 45;
 const TIME_ZONE = 'Europe/Paris';
 
 function timeZoneOffsetMinutes(date, timeZone) {
@@ -87,6 +90,14 @@ async function supabaseInsert(table, row) {
   }
 }
 
+async function supabaseDelete(path) {
+  const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, {
+    method: 'DELETE',
+    headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY }
+  });
+  if (!res.ok) throw new Error('Supabase DELETE ' + path + ' -> ' + res.status + ' ' + await res.text());
+}
+
 // Envoie (ou programme) une notification à un ou plusieurs appareils précis,
 // identifiés par leurs OneSignal player_ids — jamais à "tous les abonnés".
 async function oneSignalSchedule(title, body, sendAfterUtc, playerIds) {
@@ -107,6 +118,17 @@ async function oneSignalSchedule(title, body, sendAfterUtc, playerIds) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error('OneSignal -> ' + res.status + ' ' + JSON.stringify(data));
   return data;
+}
+
+// Annule une notification OneSignal programmée (pas encore envoyée). Si elle
+// a déjà été envoyée, OneSignal renvoie une erreur qu'on ignore simplement.
+async function oneSignalCancel(notificationId) {
+  try {
+    await fetch('https://onesignal.com/api/v1/notifications/' + notificationId + '?app_id=' + ONESIGNAL_APP_ID, {
+      method: 'DELETE',
+      headers: { Authorization: 'Basic ' + ONESIGNAL_REST_API_KEY }
+    });
+  } catch (e) {}
 }
 
 // Pour une tâche donnée, renvoie la liste des id employés qui doivent être
@@ -130,13 +152,19 @@ async function runScheduling() {
   }
 
   const [employees, tasks, assigneeRows] = await Promise.all([
-    supabaseGet('employees?select=id,player_ids'),
+    supabaseGet('employees?select=id,player_ids,is_admin'),
     supabaseGet('tasks?select=id,title,time,recurrence_type,recurrence_days,owner_employee_id,is_mandatory'),
     supabaseGet('task_assignees?select=task_id,employee_id')
   ]);
 
   const employeeById = {};
   for (const e of employees) employeeById[e.id] = e;
+
+  // Appareils des patrons (is_admin), pour les alertes "tâche obligatoire
+  // pas encore faite" — jamais ceux des employés.
+  const adminPlayerIds = Array.from(new Set(
+    employees.filter(e => e.is_admin).flatMap(e => e.player_ids || [])
+  ));
 
   const assigneesByTask = {};
   for (const row of assigneeRows) {
@@ -153,10 +181,12 @@ async function runScheduling() {
   // Une seule requête pour connaître tout ce qui est déjà programmé sur ces
   // deux jours, plutôt qu'une requête par (tâche, employé) — évite de
   // multiplier les appels Supabase quand il y a plusieurs employés.
-  const already = await supabaseGet(
-    'scheduled_notifications?select=id&date=in.(' + dsToday + ',' + dsTomorrow + ')'
-  );
+  const [already, alreadyOverdue] = await Promise.all([
+    supabaseGet('scheduled_notifications?select=id&date=in.(' + dsToday + ',' + dsTomorrow + ')'),
+    supabaseGet('overdue_alerts?select=id&date=in.(' + dsToday + ',' + dsTomorrow + ')')
+  ]);
   const scheduledSet = new Set(already.map(r => r.id));
+  const overdueSet = new Set(alreadyOverdue.map(r => r.id));
 
   let scheduled = 0, skipped = 0;
   const errors = [];
@@ -170,26 +200,48 @@ async function runScheduling() {
       const [hh, mm] = task.time.split(':').map(Number);
       const taskUtc = zonedWallTimeToUtc(ymd.y, ymd.m, ymd.d, hh, mm, TIME_ZONE);
       const sendAt = new Date(taskUtc.getTime() - REMINDER_LEAD_MIN * 60000);
-      if (sendAt.getTime() <= now.getTime() + 60000) { skipped++; continue; } // déjà passé
-
       const recipients = recipientsForTask(task, assigneesByTask);
 
-      for (const employeeId of recipients) {
-        const employee = employeeById[employeeId];
-        const playerIds = (employee && employee.player_ids) || [];
-        if (!playerIds.length) { skipped++; continue; } // pas encore d'appareil connu pour cet employé
+      if (sendAt.getTime() > now.getTime() + 60000) { // pas encore passé
+        for (const employeeId of recipients) {
+          const employee = employeeById[employeeId];
+          const playerIds = (employee && employee.player_ids) || [];
+          if (!playerIds.length) { skipped++; continue; } // pas encore d'appareil connu pour cet employé
 
-        const id = ds + '_' + task.id + '_' + employeeId;
-        if (scheduledSet.has(id)) { skipped++; continue; }
+          const id = ds + '_' + task.id + '_' + employeeId;
+          if (scheduledSet.has(id)) { skipped++; continue; }
 
-        try {
-          const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt, playerIds);
-          await supabaseInsert('scheduled_notifications', { id, task_id: task.id, date: ds, employee_id: employeeId });
-          scheduledSet.add(id);
-          scheduled++;
-          details.push({ task: task.title, employeeId, date: ds, sendAt: sendAt.toISOString(), oneSignalId: osResult.id, recipients: osResult.recipients, errorsFromOS: osResult.errors });
-        } catch (e) {
-          errors.push({ task: task.title, employeeId, date: ds, error: String(e.message || e) });
+          try {
+            const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt, playerIds);
+            await supabaseInsert('scheduled_notifications', { id, task_id: task.id, date: ds, employee_id: employeeId, onesignal_id: osResult.id });
+            scheduledSet.add(id);
+            scheduled++;
+            details.push({ task: task.title, employeeId, date: ds, sendAt: sendAt.toISOString(), oneSignalId: osResult.id, recipients: osResult.recipients, errorsFromOS: osResult.errors });
+          } catch (e) {
+            errors.push({ task: task.title, employeeId, date: ds, error: String(e.message || e) });
+          }
+        }
+      } else {
+        skipped++;
+      }
+
+      // Alerte au patron si une tâche OBLIGATOIRE n'est toujours pas faite
+      // OVERDUE_ALERT_DELAY_MIN minutes après son heure prévue. Une seule
+      // alerte par (tâche, jour) — annulée automatiquement si tout le monde
+      // a fini avant l'envoi (voir cancelOverdueAlertIfComplete, appelée par
+      // l'appli dès qu'un employé coche une tâche obligatoire).
+      if (task.is_mandatory && recipients.length && adminPlayerIds.length) {
+        const overdueId = ds + '_' + task.id;
+        const overdueSendAt = new Date(taskUtc.getTime() + OVERDUE_ALERT_DELAY_MIN * 60000);
+        if (!overdueSet.has(overdueId) && overdueSendAt.getTime() > now.getTime() + 60000) {
+          try {
+            const osResult = await oneSignalSchedule('Frimor Task', '⚠️ ' + task.title + ' (obligatoire) — toujours pas faite ?', overdueSendAt, adminPlayerIds);
+            await supabaseInsert('overdue_alerts', { id: overdueId, task_id: task.id, date: ds, onesignal_id: osResult.id });
+            overdueSet.add(overdueId);
+            scheduled++;
+          } catch (e) {
+            errors.push({ task: task.title, overdue: true, date: ds, error: String(e.message || e) });
+          }
         }
       }
     }
@@ -198,4 +250,55 @@ async function runScheduling() {
   return { ok: true, scheduled, skipped, errors, details, ranAt: now.toISOString() };
 }
 
-module.exports = { runScheduling };
+// Appelée par l'appli dès qu'un employé coche une tâche obligatoire comme
+// faite. Si TOUS les employés concernés par cette tâche l'ont faite
+// aujourd'hui, annule l'alerte "pas encore faite" programmée pour le patron
+// (si elle existe encore) pour éviter une fausse alerte.
+async function cancelOverdueAlertIfComplete(taskId, ds) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ok: false, error: 'missing_env' };
+
+  const alertRows = await supabaseGet('overdue_alerts?select=id,onesignal_id&id=eq.' + encodeURIComponent(ds + '_' + taskId));
+  if (!alertRows.length) return { ok: true, skipped: true }; // rien de programmé, rien à faire
+
+  const assigneeRows = await supabaseGet('task_assignees?select=employee_id&task_id=eq.' + encodeURIComponent(taskId));
+  const assigneeIds = assigneeRows.map(r => r.employee_id);
+  if (!assigneeIds.length) return { ok: true, skipped: true };
+
+  const logRows = await supabaseGet('logs?select=employee_id,done&date=eq.' + encodeURIComponent(ds) + '&task_id=eq.' + encodeURIComponent(taskId));
+  const doneByEmployee = {};
+  logRows.forEach(r => { doneByEmployee[r.employee_id] = !!r.done; });
+  const allDone = assigneeIds.every(id => doneByEmployee[id]);
+  if (!allDone) return { ok: true, allDone: false };
+
+  const alert = alertRows[0];
+  if (alert.onesignal_id) await oneSignalCancel(alert.onesignal_id);
+  await supabaseDelete('overdue_alerts?id=eq.' + encodeURIComponent(alert.id));
+  return { ok: true, cancelled: true };
+}
+
+// Appelée par l'appli dès qu'une tâche est supprimée (par un employé pour
+// ses tâches perso, ou par le patron pour une tâche obligatoire). Annule
+// immédiatement tout rappel déjà programmé chez OneSignal pour cette tâche
+// (aujourd'hui et demain), au lieu d'attendre qu'il parte "pour rien".
+async function cancelNotificationsForTask(taskId) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return { ok: false, error: 'missing_env' };
+
+  const [scheduledRows, overdueRows] = await Promise.all([
+    supabaseGet('scheduled_notifications?select=id,onesignal_id&task_id=eq.' + encodeURIComponent(taskId)),
+    supabaseGet('overdue_alerts?select=id,onesignal_id&task_id=eq.' + encodeURIComponent(taskId))
+  ]);
+
+  let cancelled = 0;
+  for (const row of scheduledRows) {
+    if (row.onesignal_id) { await oneSignalCancel(row.onesignal_id); cancelled++; }
+    await supabaseDelete('scheduled_notifications?id=eq.' + encodeURIComponent(row.id));
+  }
+  for (const row of overdueRows) {
+    if (row.onesignal_id) { await oneSignalCancel(row.onesignal_id); cancelled++; }
+    await supabaseDelete('overdue_alerts?id=eq.' + encodeURIComponent(row.id));
+  }
+
+  return { ok: true, cancelled };
+}
+
+module.exports = { runScheduling, cancelOverdueAlertIfComplete, cancelNotificationsForTask };
