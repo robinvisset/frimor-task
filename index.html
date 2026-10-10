@@ -222,9 +222,27 @@
       <label for="emp-pin">Code à 4 chiffres</label>
       <input type="tel" inputmode="numeric" maxlength="4" id="emp-pin" placeholder="1234">
     </div>
+    <div class="field">
+      <label>Rôle</label>
+      <div class="role-seg" id="emp-role-seg">
+        <button type="button" class="active" data-role="user">Utilisateur</button>
+        <button type="button" data-role="admin">Administrateur</button>
+      </div>
+    </div>
     <div class="sheet-actions">
       <button class="btn btn-ghost" id="emp-cancel">Annuler</button>
       <button class="btn btn-primary" id="emp-save">Ajouter</button>
+    </div>
+  </div>
+
+  <div id="sheet-substitute-backdrop"></div>
+  <div id="sheet-substitute">
+    <h2>Remplacement (absence)</h2>
+    <p class="sheet-sub-text">Les tâches de <b id="sub-absent-name"></b> seront prises en charge par la personne choisie ci-dessous, jusqu'à ce que tu cliques sur « Terminer le remplacement ».</p>
+    <div id="sub-employee-picker" class="mt-employee-picker"></div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="sub-cancel">Annuler</button>
+      <button class="btn btn-primary" id="sub-save">Confirmer</button>
     </div>
   </div>
 
