@@ -60,9 +60,29 @@ function weekdayOf(ymd) {
   return new Date(Date.UTC(ymd.y, ymd.m - 1, ymd.d)).getUTCDay();
 }
 
-function isScheduled(task, weekday) {
-  if (task.recurrence_type !== 'days') return true;
-  return (task.recurrence_days || []).includes(weekday);
+function daysInMonthUTC(y, m) { return new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); } // m : 0-indexé
+
+// Même logique que matchesPeriodic côté app.js (voir ce fichier pour le
+// détail) : `anchorDs` ("YYYY-MM-DD") revient tous les `everyNMonths` mois,
+// en retombant sur le dernier jour du mois si celui-ci est plus court que le
+// jour d'ancrage (ex. ancrage le 31, mois de 30 jours).
+function matchesPeriodicYMD(anchorDs, ymd, everyNMonths) {
+  if (!anchorDs) return false;
+  const [ay, am, ad] = anchorDs.split('-').map(Number);
+  const diffMonths = (ymd.y - ay) * 12 + (ymd.m - am);
+  if (diffMonths < 0 || diffMonths % everyNMonths !== 0) return false;
+  const lastDay = daysInMonthUTC(ymd.y, ymd.m - 1);
+  const targetDay = Math.min(ad, lastDay);
+  return ymd.d === targetDay;
+}
+
+function isScheduled(task, weekday, ymd, ds) {
+  if (task.recurrence_type === 'days') return (task.recurrence_days || []).includes(weekday);
+  if (task.recurrence_type === 'date') return task.recurrence_date === ds;
+  if (task.recurrence_type === 'monthly') return matchesPeriodicYMD(task.recurrence_date, ymd, 1);
+  if (task.recurrence_type === 'quarterly') return matchesPeriodicYMD(task.recurrence_date, ymd, 3);
+  if (task.recurrence_type === 'annual') return matchesPeriodicYMD(task.recurrence_date, ymd, 12);
+  return true; // daily
 }
 
 async function supabaseGet(path) {
@@ -153,7 +173,7 @@ async function runScheduling() {
 
   const [employees, tasks, assigneeRows] = await Promise.all([
     supabaseGet('employees?select=id,player_ids,is_admin'),
-    supabaseGet('tasks?select=id,title,time,recurrence_type,recurrence_days,owner_employee_id,is_mandatory'),
+    supabaseGet('tasks?select=id,title,time,recurrence_type,recurrence_days,recurrence_date,owner_employee_id,is_mandatory'),
     supabaseGet('task_assignees?select=task_id,employee_id')
   ]);
 
@@ -196,7 +216,7 @@ async function runScheduling() {
     const ds = ymdToDs(ymd);
     const weekday = weekdayOf(ymd);
     for (const task of tasks) {
-      if (!isScheduled(task, weekday)) continue;
+      if (!isScheduled(task, weekday, ymd, ds)) continue;
       const [hh, mm] = task.time.split(':').map(Number);
       const taskUtc = zonedWallTimeToUtc(ymd.y, ymd.m, ymd.d, hh, mm, TIME_ZONE);
       const sendAt = new Date(taskUtc.getTime() - REMINDER_LEAD_MIN * 60000);
