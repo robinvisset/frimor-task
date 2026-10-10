@@ -232,12 +232,56 @@
 
   var pendingDelete = null;
 
+  function taskRowHtml(t, ds, ro){
+    var key = logKey(t.id, ds);
+    var log = logs[key];
+    var done = !!(log && log.done);
+    var blocked = !!(log && log.blocked);
+    var note = (log && log.note) || '';
+    var cls = 'task-row';
+    if (done) cls += ' done';
+    else if (blocked) cls += ' blocked';
+    else if (dueSoon.has(t.id)) cls += ' due';
+    else if (overdue.has(t.id)) cls += ' overdue';
+
+    var delIsConfirm = pendingDelete === t.id;
+
+    var html = '<div class="'+cls+'" data-id="'+t.id+'">'
+      + '<button class="check"'+(ro ? '' : ' data-action="toggle"')+'>'
+        + '<svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      + '</button>'
+      + '<div class="task-main">'
+        + '<span class="task-title">'+escapeHtml(t.title)+'</span>'
+        + '<span class="task-meta">'
+          + (blocked ? '<span class="tag tag-alert">empêchement signalé</span>' : '')
+          + (overdue.has(t.id) && !done && !blocked ? '<span class="tag">en retard</span>' : '')
+          + (freqLabel(t) ? '<span class="tag">'+freqLabel(t)+'</span>' : '')
+          + (t.example ? '<span class="tag">exemple</span>' : '')
+        + '</span>'
+        + (note ? '<span class="task-note-text">'+escapeHtml(note)+'</span>' : '')
+      + '</div>'
+      + '<span class="task-time mono">'+t.time+'</span>'
+      + (ro ? '' : '<button class="task-note'+((note||blocked)?' has-note':'')+'" data-action="note" aria-label="Note / signaler un empêchement">'
+        + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+        + '</button>')
+      + (t.isMandatory || ro ? '' : '<button class="task-del'+(delIsConfirm?' confirm':'')+'" data-action="delete">'
+        + (delIsConfirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
+        + '</button>')
+      + '</div>';
+    return { html: html, done: done };
+  }
+
+  function updateAppBadge(pendingCount){
+    try{
+      if (pendingCount > 0 && 'setAppBadge' in navigator) navigator.setAppBadge(pendingCount).catch(function(){});
+      else if (pendingCount === 0 && 'clearAppBadge' in navigator) navigator.clearAppBadge().catch(function(){});
+    }catch(e){}
+  }
+
   function renderTasks(){
     var list = todayTaskList();
     var ds = dateKey();
     var container = document.getElementById('task-list');
-    var doneCount = 0;
-
     var ro = isReadOnlyView();
 
     if (list.length === 0){
@@ -250,54 +294,33 @@
       document.getElementById('today-count').textContent = '0/0';
       var bar0 = document.getElementById('today-progress');
       if (bar0) bar0.style.width = '0%';
+      if (!ro) updateAppBadge(0);
       return;
     }
 
-    var html = list.map(function(t){
-      var key = logKey(t.id, ds);
-      var log = logs[key];
-      var done = !!(log && log.done);
-      var blocked = !!(log && log.blocked);
-      var note = (log && log.note) || '';
-      if (done) doneCount++;
-      var cls = 'task-row';
-      if (done) cls += ' done';
-      else if (blocked) cls += ' blocked';
-      else if (dueSoon.has(t.id)) cls += ' due';
-      else if (overdue.has(t.id)) cls += ' overdue';
+    var mandatoryList = list.filter(function(t){ return t.isMandatory; });
+    var personalList = list.filter(function(t){ return !t.isMandatory; });
+    var doneCount = 0;
 
-      var delIsConfirm = pendingDelete === t.id;
+    function group(label, items){
+      if (items.length === 0) return '';
+      var groupDone = 0;
+      var rows = items.map(function(t){
+        var r = taskRowHtml(t, ds, ro);
+        if (r.done){ groupDone++; doneCount++; }
+        return r.html;
+      }).join('');
+      return '<div class="task-group-label">'+label+' <span class="count">'+groupDone+'/'+items.length+'</span></div>'
+        + '<div class="task-group">' + rows + '</div>';
+    }
 
-      return '<div class="'+cls+'" data-id="'+t.id+'">'
-        + '<button class="check"'+(ro ? '' : ' data-action="toggle"')+'>'
-          + '<svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-        + '</button>'
-        + '<div class="task-main">'
-          + '<span class="task-title">'+escapeHtml(t.title)+'</span>'
-          + '<span class="task-meta">'
-            + (blocked ? '<span class="tag tag-alert">empêchement signalé</span>' : '')
-            + (overdue.has(t.id) && !done && !blocked ? '<span class="tag">en retard</span>' : '')
-            + (freqLabel(t) ? '<span class="tag">'+freqLabel(t)+'</span>' : '')
-            + (t.isMandatory ? '<span class="tag">obligatoire</span>' : '')
-            + (t.example ? '<span class="tag">exemple</span>' : '')
-          + '</span>'
-          + (note ? '<span class="task-note-text">'+escapeHtml(note)+'</span>' : '')
-        + '</div>'
-        + '<span class="task-time mono">'+t.time+'</span>'
-        + (ro ? '' : '<button class="task-note'+((note||blocked)?' has-note':'')+'" data-action="note" aria-label="Note / signaler un empêchement">'
-          + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
-          + '</button>')
-        + (t.isMandatory || ro ? '' : '<button class="task-del'+(delIsConfirm?' confirm':'')+'" data-action="delete">'
-          + (delIsConfirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
-          + '</button>')
-        + '</div>';
-    }).join('');
+    container.innerHTML = group('Obligatoire', mandatoryList) + group('Tes tâches', personalList);
 
-    container.innerHTML = html;
     document.getElementById('today-count').textContent = doneCount + '/' + list.length;
     var pct = list.length ? Math.round(100 * doneCount / list.length) : 0;
     var bar = document.getElementById('today-progress');
     if (bar) bar.style.width = pct + '%';
+    if (!ro) updateAppBadge(list.length - doneCount);
   }
 
   function scheduledOn(t, ds){
@@ -467,12 +490,23 @@
     if (!sb || !session) return;
     var pid = currentOneSignalId();
     if (!pid) return;
-    sb.from('employees').select('player_ids').eq('id', session.id).single().then(function(res){
+    // Un même téléphone/navigateur (donc un même identifiant OneSignal) ne doit
+    // jamais être enregistré que chez UN SEUL employé à la fois : sinon, si
+    // plusieurs personnes se sont connectées tour à tour sur cet appareil, il
+    // continue de recevoir les notifications de tout le monde. On le retire
+    // d'abord de tous les autres employés avant de l'ajouter ici.
+    sb.from('employees').select('id,player_ids').then(function(res){
       if (res.error || !res.data) return;
-      var ids = res.data.player_ids || [];
-      if (ids.indexOf(pid) !== -1) return;
-      ids.push(pid);
-      sb.from('employees').update({ player_ids: ids }).eq('id', session.id).then(function(){});
+      res.data.forEach(function(row){
+        var ids = row.player_ids || [];
+        if (row.id === session.id){
+          if (ids.indexOf(pid) === -1){
+            sb.from('employees').update({ player_ids: ids.concat([pid]) }).eq('id', row.id).then(function(){});
+          }
+        } else if (ids.indexOf(pid) !== -1){
+          sb.from('employees').update({ player_ids: ids.filter(function(x){ return x !== pid; }) }).eq('id', row.id).then(function(){});
+        }
+      });
     }).catch(function(){});
   }
   function syncPlayerIdSoon(){ setTimeout(syncPlayerIdToEmployee, 1500); }
@@ -572,10 +606,12 @@
 
   function loadEmployees(){
     if (!sb) return Promise.resolve();
-    return sb.from('employees').select('id,name,is_admin').then(function(res){
+    return sb.from('employees').select('id,name,is_admin,replaced_by').then(function(res){
       if (res.error) return;
       var next = {};
-      (res.data || []).forEach(function(row){ next[row.id] = { id: row.id, name: row.name, is_admin: !!row.is_admin }; });
+      (res.data || []).forEach(function(row){
+        next[row.id] = { id: row.id, name: row.name, is_admin: !!row.is_admin, replacedBy: row.replaced_by || null };
+      });
       employees = next;
       if (session && session.is_admin){ renderAdminEmployees(); }
       if (!session){ renderLoginNames(); }
@@ -606,7 +642,6 @@
     tasks = next;
     renderAll();
     if (session && session.is_admin){ renderAdminTasks(); }
-    await seedExamplesIfEmpty();
   }
 
   async function loadLogsFor(employeeId){
@@ -744,6 +779,9 @@
     if (session && session.is_admin) renderAdminTasks();
     var res = await sb.from('tasks').delete().eq('id', id);
     if (res.error) toast('Suppression impossible.');
+    // Annule tout de suite les rappels déjà programmés pour cette tâche (sinon
+    // ils restent en attente chez OneSignal et sonnent quand même plus tard).
+    fetch('/api/cancel-task-notifications?task_id=' + encodeURIComponent(id)).catch(function(){});
   }
 
   async function toggleTask(id){
@@ -829,6 +867,82 @@
     delete employees[id];
     renderAdminEmployees();
     toast('Employé supprimé.');
+  }
+
+  // ======================= remplacement en cas d'absence =======================
+  // Principe : au lieu de "fusionner" deux listes de tâches à l'affichage (ce
+  // qui obligerait à adapter tout l'app), on transfère réellement les tâches de
+  // l'absent vers son remplaçant (changement de owner_employee_id pour les
+  // tâches perso, échange dans task_assignees pour les obligatoires). Tout le
+  // reste de l'appli (notifications, alertes patron, export CSV...) continue
+  // de fonctionner sans rien y toucher. On mémorise ce qui a été transféré
+  // dans employees.sub_data pour pouvoir tout remettre en place exactement à
+  // l'identique quand le remplacement se termine.
+
+  async function startSubstitution(absentId, substituteId){
+    if (!sb || !session || !session.is_admin) return;
+    if (!absentId || !substituteId || absentId === substituteId) return;
+
+    var personalIds = Object.values(tasks)
+      .filter(function(t){ return !t.isMandatory && t.ownerEmployeeId === absentId; })
+      .map(function(t){ return t.id; });
+
+    var mandatoryIds = [];
+    Object.keys(assignees).forEach(function(taskId){
+      if (assignees[taskId] && assignees[taskId].has(absentId)) mandatoryIds.push(taskId);
+    });
+    var addedMandatoryIds = mandatoryIds.filter(function(taskId){
+      return !(assignees[taskId] && assignees[taskId].has(substituteId));
+    });
+
+    if (personalIds.length){
+      var r1 = await sb.from('tasks').update({ owner_employee_id: substituteId }).in('id', personalIds);
+      if (r1.error){ toast('Remplacement impossible.'); return; }
+    }
+    if (mandatoryIds.length){
+      await sb.from('task_assignees').delete().eq('employee_id', absentId).in('task_id', mandatoryIds);
+      if (addedMandatoryIds.length){
+        var rows = addedMandatoryIds.map(function(taskId){ return { task_id: taskId, employee_id: substituteId }; });
+        await sb.from('task_assignees').insert(rows);
+      }
+    }
+    var r3 = await sb.from('employees').update({
+      replaced_by: substituteId,
+      sub_data: { personalIds: personalIds, mandatoryIds: mandatoryIds, addedMandatoryIds: addedMandatoryIds }
+    }).eq('id', absentId);
+    if (r3.error){ toast('Remplacement impossible.'); return; }
+
+    toast('Remplacement activé.');
+    await Promise.all([loadTasks(), loadAssignees(), loadEmployees()]);
+    renderAdminEmployees();
+  }
+
+  async function endSubstitution(absentId){
+    if (!sb || !session || !session.is_admin) return;
+    var res = await sb.from('employees').select('replaced_by,sub_data').eq('id', absentId).single();
+    if (res.error || !res.data || !res.data.replaced_by){ toast('Rien à terminer.'); return; }
+    var substituteId = res.data.replaced_by;
+    var d = res.data.sub_data || {};
+    var personalIds = (d.personalIds || []).filter(function(id){ return tasks[id]; });
+    var mandatoryIds = (d.mandatoryIds || []).filter(function(id){ return tasks[id]; });
+    var addedMandatoryIds = (d.addedMandatoryIds || []).filter(function(id){ return tasks[id]; });
+
+    if (personalIds.length){
+      await sb.from('tasks').update({ owner_employee_id: absentId }).in('id', personalIds).eq('owner_employee_id', substituteId);
+    }
+    if (mandatoryIds.length){
+      await sb.from('task_assignees').delete().eq('employee_id', absentId).in('task_id', mandatoryIds);
+      var rows = mandatoryIds.map(function(taskId){ return { task_id: taskId, employee_id: absentId }; });
+      await sb.from('task_assignees').insert(rows);
+    }
+    if (addedMandatoryIds.length){
+      await sb.from('task_assignees').delete().eq('employee_id', substituteId).in('task_id', addedMandatoryIds);
+    }
+    await sb.from('employees').update({ replaced_by: null, sub_data: null }).eq('id', absentId);
+
+    toast('Remplacement terminé.');
+    await Promise.all([loadTasks(), loadAssignees(), loadEmployees()]);
+    renderAdminEmployees();
   }
 
   function wireRealtime(){
@@ -967,6 +1081,7 @@
     if (sheetEmp.classList.contains('open')) closeSheetEmp();
     if (sheetMt.classList.contains('open')) closeSheetMt();
     if (sheetNote.classList.contains('open')) closeSheetNote();
+    if (sheetSub.classList.contains('open')) closeSheetSub();
   });
   document.getElementById('f-save').addEventListener('click', function(){
     var title = document.getElementById('f-title').value.trim();
@@ -1028,6 +1143,7 @@
     box.innerHTML = list.map(function(e){
       var confirm = pendingDeleteEmp === e.id;
       var isSelf = session && e.id === session.id;
+      var replacedByName = e.replacedBy && employees[e.replacedBy] ? employees[e.replacedBy].name : null;
       var metaText;
       if (e.is_admin){
         metaText = 'Administrateur';
@@ -1037,12 +1153,24 @@
         var blockedCount = empTasks.filter(function(t){ var entry = todayLogsAll[ds + '_' + t.id + '_' + e.id]; return entry && entry.blocked; }).length;
         metaText = done + '/' + empTasks.length + ' tâche' + (empTasks.length === 1 ? '' : 's') + ' aujourd\'hui' + (blockedCount > 0 ? ' · ' + blockedCount + ' empêchement' + (blockedCount > 1 ? 's' : '') : '');
       }
+      if (replacedByName){
+        metaText += ' · <span class="admin-row-sub-active">remplacé par ' + escapeHtml(replacedByName) + '</span>';
+      }
+      var subBtn = '';
+      if (!e.is_admin && !isSelf){
+        subBtn = replacedByName
+          ? '<button class="admin-row-end-sub" data-action="end-sub">Terminer</button>'
+          : '<button class="admin-row-sub" data-action="start-sub" aria-label="Remplacement (absence)">'
+            + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+            + '</button>';
+      }
       return '<div class="admin-row" data-id="'+e.id+'">'
         + '<div class="admin-row-main"><div class="admin-row-title">'+escapeHtml(e.name)+'</div>'
         + '<div class="admin-row-meta">'+metaText+'</div></div>'
         + (isSelf ? '' : '<button class="admin-row-view" data-action="view-employee" aria-label="Voir ses tâches">'
           + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>'
           + '</button>')
+        + subBtn
         + (e.is_admin ? '' : '<button class="admin-row-del'+(confirm?' confirm':'')+'" data-action="delete-employee">'
           + (confirm ? 'SUPPR.' : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/></svg>')
           + '</button>')
@@ -1086,7 +1214,42 @@
         pendingDeleteEmp = id; renderAdminEmployees();
         setTimeout(function(){ if (pendingDeleteEmp === id){ pendingDeleteEmp = null; renderAdminEmployees(); } }, 3000);
       }
+    } else if (action.dataset.action === 'start-sub'){
+      openSheetSub(id);
+    } else if (action.dataset.action === 'end-sub'){
+      endSubstitution(id);
     }
+  });
+
+  // --- remplacement (absence) ---
+  var sheetSub = document.getElementById('sheet-substitute');
+  var sheetSubBackdrop = document.getElementById('sheet-substitute-backdrop');
+  var subAbsentId = null;
+  var subSelectedEmployee = null;
+  function closeSheetSub(){ sheetSub.classList.remove('open'); sheetSubBackdrop.classList.remove('open'); }
+  function openSheetSub(absentId){
+    subAbsentId = absentId;
+    subSelectedEmployee = null;
+    var absent = employees[absentId];
+    document.getElementById('sub-absent-name').textContent = absent ? absent.name : '';
+    var box = document.getElementById('sub-employee-picker');
+    var choices = Object.values(employees).filter(function(e){ return !e.is_admin && e.id !== absentId; }).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
+    box.innerHTML = choices.map(function(e){
+      return '<button type="button" class="mt-emp-chip" data-id="'+e.id+'">'+escapeHtml(e.name)+'</button>';
+    }).join('') || '<div class="empty-state">Aucun autre employé disponible.</div>';
+    sheetSub.classList.add('open'); sheetSubBackdrop.classList.add('open');
+  }
+  document.getElementById('sub-employee-picker').addEventListener('click', function(e){
+    var chip = e.target.closest('.mt-emp-chip'); if (!chip) return;
+    subSelectedEmployee = chip.dataset.id;
+    document.querySelectorAll('#sub-employee-picker .mt-emp-chip').forEach(function(c){ c.classList.toggle('active', c === chip); });
+  });
+  document.getElementById('sub-cancel').addEventListener('click', closeSheetSub);
+  sheetSubBackdrop.addEventListener('click', closeSheetSub);
+  document.getElementById('sub-save').addEventListener('click', function(){
+    if (!subSelectedEmployee){ toast('Choisis qui remplace.'); return; }
+    startSubstitution(subAbsentId, subSelectedEmployee);
+    closeSheetSub();
   });
 
   document.getElementById('admin-task-list').addEventListener('click', function(e){
@@ -1108,23 +1271,32 @@
   // --- ajouter un employé ---
   var sheetEmp = document.getElementById('sheet-employee');
   var sheetEmpBackdrop = document.getElementById('sheet-employee-backdrop');
+  var empRoleChoice = 'user';
   function closeSheetEmp(){ sheetEmp.classList.remove('open'); sheetEmpBackdrop.classList.remove('open'); }
   document.getElementById('admin-add-employee').addEventListener('click', function(){
     document.getElementById('emp-name').value = '';
     document.getElementById('emp-pin').value = '';
+    empRoleChoice = 'user';
+    document.querySelectorAll('#emp-role-seg button').forEach(function(b){ b.classList.toggle('active', b.dataset.role === 'user'); });
     sheetEmp.classList.add('open'); sheetEmpBackdrop.classList.add('open');
+  });
+  document.getElementById('emp-role-seg').addEventListener('click', function(e){
+    var btn = e.target.closest('button'); if (!btn) return;
+    empRoleChoice = btn.dataset.role;
+    document.querySelectorAll('#emp-role-seg button').forEach(function(b){ b.classList.toggle('active', b === btn); });
   });
   document.getElementById('emp-cancel').addEventListener('click', closeSheetEmp);
   sheetEmpBackdrop.addEventListener('click', closeSheetEmp);
   document.getElementById('emp-save').addEventListener('click', async function(){
     var name = document.getElementById('emp-name').value.trim();
     var pin = document.getElementById('emp-pin').value.trim();
+    var isAdmin = empRoleChoice === 'admin';
     if (!name){ toast('Donne un nom.'); return; }
     if (!/^\d{4}$/.test(pin)){ toast('Le code doit avoir 4 chiffres.'); return; }
-    var res = await sb.from('employees').insert({ name: name, pin: pin, is_admin: false }).select();
+    var res = await sb.from('employees').insert({ name: name, pin: pin, is_admin: isAdmin }).select();
     if (res.error){ toast(res.error.code === '23505' ? 'Ce nom existe déjà.' : 'Ajout impossible.'); return; }
     var row = res.data && res.data[0];
-    if (row) employees[row.id] = { id: row.id, name: row.name, is_admin: false };
+    if (row) employees[row.id] = { id: row.id, name: row.name, is_admin: isAdmin };
     renderAdminEmployees();
     closeSheetEmp();
     toast('Employé ajouté.');
@@ -1281,7 +1453,7 @@
       ].join(';'));
     });
 
-    var csv = '\uFEFF' + lines.join('\r\n');
+    var csv = '﻿' + lines.join('\r\n');
     var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
