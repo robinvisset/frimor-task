@@ -301,6 +301,25 @@
     </div>
   </div>
 
+  <div id="sheet-account-backdrop"></div>
+  <div id="sheet-account">
+    <h2>Mon compte</h2>
+    <p class="sheet-sub-text" id="account-name-text"></p>
+    <div class="field">
+      <label for="account-new-pin">Nouveau code à 4 chiffres</label>
+      <input type="tel" inputmode="numeric" maxlength="4" id="account-new-pin" placeholder="1234" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="account-new-pin-confirm">Confirme le nouveau code</label>
+      <input type="tel" inputmode="numeric" maxlength="4" id="account-new-pin-confirm" placeholder="1234" autocomplete="off">
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="account-cancel">Annuler</button>
+      <button class="btn btn-primary" id="account-save-pin">Enregistrer</button>
+    </div>
+    <button type="button" class="btn btn-ghost account-logout-btn" id="account-logout">Se déconnecter</button>
+  </div>
+
   <div id="toast"></div>
 </div>
 
