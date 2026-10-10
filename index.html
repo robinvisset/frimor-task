@@ -180,7 +180,7 @@
 
   <div id="sheet-backdrop"></div>
   <div id="sheet">
-    <h2>Nouvelle tâche</h2>
+    <h2 id="sheet-title">Nouvelle tâche</h2>
     <div class="field">
       <label for="f-title">Nom de la tâche</label>
       <input type="text" id="f-title" placeholder="Ex. Relevé des températures" maxlength="60">
@@ -194,6 +194,10 @@
       <div class="seg" id="freq-seg">
         <button type="button" class="seg-btn active" data-freq="daily">Tous les jours</button>
         <button type="button" class="seg-btn" data-freq="days">Jours choisis</button>
+        <button type="button" class="seg-btn" data-freq="date">Date précise</button>
+        <button type="button" class="seg-btn" data-freq="monthly">Mensuelle</button>
+        <button type="button" class="seg-btn" data-freq="quarterly">Trimestrielle</button>
+        <button type="button" class="seg-btn" data-freq="annual">Annuelle</button>
       </div>
       <div class="day-picker" id="day-picker" hidden>
         <button type="button" class="day-chip" data-day="1">LUN</button>
@@ -203,6 +207,11 @@
         <button type="button" class="day-chip" data-day="5">VEN</button>
         <button type="button" class="day-chip" data-day="6">SAM</button>
         <button type="button" class="day-chip" data-day="0">DIM</button>
+      </div>
+      <div class="field date-field" id="date-picker" hidden>
+        <label for="f-date">Date</label>
+        <input type="date" id="f-date">
+        <p class="date-field-hint" id="date-hint"></p>
       </div>
     </div>
     <div class="sheet-actions">
@@ -248,7 +257,7 @@
 
   <div id="sheet-mtask-backdrop"></div>
   <div id="sheet-mtask">
-    <h2>Tâche obligatoire</h2>
+    <h2 id="mt-sheet-title">Tâche obligatoire</h2>
     <div class="field">
       <label for="mt-title">Nom de la tâche</label>
       <input type="text" id="mt-title" placeholder="Ex. Relevé des températures" maxlength="60">
@@ -262,6 +271,10 @@
       <div class="seg" id="mt-freq-seg">
         <button type="button" class="seg-btn active" data-freq="daily">Tous les jours</button>
         <button type="button" class="seg-btn" data-freq="days">Jours choisis</button>
+        <button type="button" class="seg-btn" data-freq="date">Date précise</button>
+        <button type="button" class="seg-btn" data-freq="monthly">Mensuelle</button>
+        <button type="button" class="seg-btn" data-freq="quarterly">Trimestrielle</button>
+        <button type="button" class="seg-btn" data-freq="annual">Annuelle</button>
       </div>
       <div class="day-picker" id="mt-day-picker" hidden>
         <button type="button" class="day-chip" data-day="1">LUN</button>
@@ -271,6 +284,11 @@
         <button type="button" class="day-chip" data-day="5">VEN</button>
         <button type="button" class="day-chip" data-day="6">SAM</button>
         <button type="button" class="day-chip" data-day="0">DIM</button>
+      </div>
+      <div class="field date-field" id="mt-date-picker" hidden>
+        <label for="mt-date">Date</label>
+        <input type="date" id="mt-date">
+        <p class="date-field-hint" id="mt-date-hint"></p>
       </div>
     </div>
     <div class="field">
