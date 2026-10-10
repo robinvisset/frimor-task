@@ -154,8 +154,7 @@
   }
 
   document.getElementById('user-chip').addEventListener('click', function(){
-    clearSession();
-    location.reload();
+    openSheetAccount();
   });
 
   function enterApp(){
@@ -1082,6 +1081,7 @@
     if (sheetMt.classList.contains('open')) closeSheetMt();
     if (sheetNote.classList.contains('open')) closeSheetNote();
     if (sheetSub.classList.contains('open')) closeSheetSub();
+    if (sheetAccount.classList.contains('open')) closeSheetAccount();
   });
   document.getElementById('f-save').addEventListener('click', function(){
     var title = document.getElementById('f-title').value.trim();
@@ -1507,6 +1507,39 @@
     var noteText = document.getElementById('note-text').value.trim().slice(0, 300);
     saveNoteAndBlocked(noteSheetTaskId, noteText, noteSheetBlocked);
     closeSheetNote();
+  });
+
+  // ======================= mon compte (changer son code) =======================
+
+  var sheetAccount = document.getElementById('sheet-account');
+  var sheetAccountBackdrop = document.getElementById('sheet-account-backdrop');
+
+  function openSheetAccount(){
+    document.getElementById('account-name-text').textContent = session ? ('Connecté en tant que ' + session.name + '.') : '';
+    document.getElementById('account-new-pin').value = '';
+    document.getElementById('account-new-pin-confirm').value = '';
+    sheetAccount.classList.add('open'); sheetAccountBackdrop.classList.add('open');
+  }
+  function closeSheetAccount(){ sheetAccount.classList.remove('open'); sheetAccountBackdrop.classList.remove('open'); }
+
+  document.getElementById('account-cancel').addEventListener('click', closeSheetAccount);
+  sheetAccountBackdrop.addEventListener('click', closeSheetAccount);
+
+  document.getElementById('account-logout').addEventListener('click', function(){
+    clearSession();
+    location.reload();
+  });
+
+  document.getElementById('account-save-pin').addEventListener('click', async function(){
+    if (!sb || !session) return;
+    var pin1 = document.getElementById('account-new-pin').value.trim();
+    var pin2 = document.getElementById('account-new-pin-confirm').value.trim();
+    if (!/^\d{4}$/.test(pin1)){ toast('Le code doit avoir 4 chiffres.'); return; }
+    if (pin1 !== pin2){ toast('Les deux codes ne correspondent pas.'); return; }
+    var res = await sb.from('employees').update({ pin: pin1 }).eq('id', session.id);
+    if (res.error){ toast('Changement impossible pour le moment.'); return; }
+    closeSheetAccount();
+    toast('Code mis à jour.');
   });
 
   // ======================= boot =======================
