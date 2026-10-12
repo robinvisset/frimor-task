@@ -127,6 +127,11 @@
 
     <section class="view" id="view-admin" hidden>
       <div class="section-label">
+        <span>Frimor — vue d'ensemble</span>
+      </div>
+      <div id="admin-company-overview"></div>
+
+      <div class="section-label admin-section-spaced">
         <span>Aperçu du jour</span>
       </div>
       <div id="admin-dashboard-list"></div>
@@ -279,78 +284,4 @@
       <div class="day-picker" id="mt-day-picker" hidden>
         <button type="button" class="day-chip" data-day="1">LUN</button>
         <button type="button" class="day-chip" data-day="2">MAR</button>
-        <button type="button" class="day-chip" data-day="3">MER</button>
-        <button type="button" class="day-chip" data-day="4">JEU</button>
-        <button type="button" class="day-chip" data-day="5">VEN</button>
-        <button type="button" class="day-chip" data-day="6">SAM</button>
-        <button type="button" class="day-chip" data-day="0">DIM</button>
-      </div>
-      <div class="field date-field" id="mt-date-picker" hidden>
-        <label for="mt-date">Date</label>
-        <input type="date" id="mt-date">
-        <p class="date-field-hint" id="mt-date-hint"></p>
-      </div>
-    </div>
-    <div class="field">
-      <label>Qui est concerné ?</label>
-      <button type="button" class="btn btn-ghost mt-select-all" id="mt-select-all">Tout le monde</button>
-      <div id="mt-employee-picker" class="mt-employee-picker"></div>
-    </div>
-    <div class="sheet-actions">
-      <button class="btn btn-ghost" id="mt-cancel">Annuler</button>
-      <button class="btn btn-primary" id="mt-save">Créer</button>
-    </div>
-  </div>
-
-  <div id="sheet-note-backdrop"></div>
-  <div id="sheet-note">
-    <h2 id="note-title">Note</h2>
-    <div class="field">
-      <label for="note-text">Note (optionnel)</label>
-      <textarea id="note-text" maxlength="300" placeholder="Ex. Chambre 2 en panne, relevé impossible..."></textarea>
-    </div>
-    <button type="button" class="note-blocked-btn" id="note-blocked-btn">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
-      Signaler un empêchement
-    </button>
-    <div class="sheet-actions">
-      <button class="btn btn-ghost" id="note-cancel">Annuler</button>
-      <button class="btn btn-primary" id="note-save">Enregistrer</button>
-    </div>
-  </div>
-
-  <div id="sheet-account-backdrop"></div>
-  <div id="sheet-account">
-    <h2>Mon compte</h2>
-    <p class="sheet-sub-text" id="account-name-text"></p>
-    <div class="field">
-      <label for="account-new-pin">Nouveau code à 4 chiffres</label>
-      <input type="tel" inputmode="numeric" maxlength="4" id="account-new-pin" placeholder="1234" autocomplete="off">
-    </div>
-    <div class="field">
-      <label for="account-new-pin-confirm">Confirme le nouveau code</label>
-      <input type="tel" inputmode="numeric" maxlength="4" id="account-new-pin-confirm" placeholder="1234" autocomplete="off">
-    </div>
-    <div class="sheet-actions">
-      <button class="btn btn-ghost" id="account-cancel">Annuler</button>
-      <button class="btn btn-primary" id="account-save-pin">Enregistrer</button>
-    </div>
-    <button type="button" class="btn btn-ghost account-logout-btn" id="account-logout">Se déconnecter</button>
-  </div>
-
-  <div id="toast"></div>
-</div>
-
-<div id="splash">
-  <div class="splash-badge"><img src="/logo-mark.png" alt=""></div>
-  <div class="splash-brand">
-    <span class="brand">FRIMOR</span>
-    <span class="product">TASK</span>
-  </div>
-  <div class="bar-track"><div class="bar-fill" id="splash-bar"></div></div>
-  <div class="splash-pct mono" id="splash-pct">0%</div>
-</div>
-
-<script src="/app.js"></script>
-</body>
-</html>
+        <button type="button" class="day-chip"
