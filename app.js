@@ -6,6 +6,13 @@
                  && CFG.SUPABASE_ANON_KEY && CFG.SUPABASE_ANON_KEY.indexOf('colle-ici') === -1;
   var ONESIGNAL_CONFIGURED = CFG.ONESIGNAL_APP_ID && CFG.ONESIGNAL_APP_ID.indexOf('colle-ici') === -1;
 
+  // Mode "annexe tablette" : activé par tablette.html (window.FRIMOR_TABLET_MODE = true
+  // avant le chargement de ce fichier). Sur ce mode, tout le monde (y compris les
+  // administrateurs) n'a que les onglets Tâches + Suivi, et l'onglet Suivi affiche
+  // le tableau de bord "qui a fait quoi aujourd'hui" (habituellement réservé à Gestion)
+  // au lieu du suivi d'habitudes personnel. Reste strictement false sur index.html.
+  var TABLET_MODE = !!window.FRIMOR_TABLET_MODE;
+
   var sb = null;
   if (CONFIGURED && window.supabase){
     sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
@@ -20,9 +27,10 @@
   function viewingEmployeeId(){ return viewAsId || (session && session.id); }
   function isReadOnlyView(){ return !!viewAsId; }
 
-  var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days,date},ownerEmployeeId,isMandatory}
+  var tasks = {};   // id -> {id,title,time,createdAt,example,recurrence:{type,days},ownerEmployeeId,isMandatory}
   var logs = {};    // "date_taskId_employeeId" -> {date,taskId,done,note,blocked}
   var todayLogsAll = {}; // pour le tableau de bord patron : "date_taskId_employeeId" -> done, pour TOUS les employés, jour courant
+  var dashExpanded = {}; // id employé -> true si sa ligne est "dépliée" dans le tableau de bord (Suivi / Gestion)
   var dueSoon = new Set();
   var overdue = new Set();
   var notifiedKeys = new Set();
@@ -195,7 +203,8 @@
     document.getElementById('login-screen').hidden = true;
     document.getElementById('user-chip').hidden = false;
     document.getElementById('user-chip-name').textContent = session.name;
-    document.getElementById('tab-admin').hidden = !session.is_admin;
+    var tabAdminEl = document.getElementById('tab-admin');
+    if (tabAdminEl) tabAdminEl.hidden = TABLET_MODE || !session.is_admin;
     saveSession(session);
     syncPlayerIdSoon();
     updateSyncBadge();
@@ -208,10 +217,11 @@
     }).catch(function(){ splashMarkReady(); });
 
     wireRealtime();
+    if (TABLET_MODE) loadDashboardLogs();
     setInterval(function(){ renderHeaderDate(); checkReminders(); flushPendingSync(); }, 20000);
     setInterval(function(){
       renderTracker(); renderPlanning();
-      if (session && session.is_admin) loadDashboardLogs();
+      if (session && (session.is_admin || TABLET_MODE)) loadDashboardLogs();
     }, 60000);
   }
 
@@ -323,7 +333,7 @@
     if (list.length === 0){
       var hasAnyTask = allTaskList().length > 0;
       container.innerHTML = ro
-        ? '<div class="empty-state">Aucune tâche prévue aujourd\'hui pour cet employé.</div>'
+        ? '<div class="empty-state">Aucune tâche prévue aujourd\'hui pour ce profil.</div>'
         : (hasAnyTask
           ? '<div class="empty-state">Aucune tâche prévue aujourd\'hui.<br>Regarde l\'onglet Planning pour voir la semaine.</div>'
           : '<div class="empty-state">Aucune tâche aujourd\'hui.<br>Ajoute ta première tâche avec le bouton +.</div>');
@@ -775,7 +785,7 @@
   // Pour le tableau de bord du patron : l'état fait/pas fait/empêchement d'AUJOURD'HUI,
   // pour tous les employés (une seule requête légère, pas 14 jours).
   async function loadDashboardLogs(){
-    if (!sb || !session || !session.is_admin) return;
+    if (!sb || !session || !(session.is_admin || TABLET_MODE)) return;
     var ds = dateKey();
     var res = await sb.from('logs').select('id,done,blocked').eq('date', ds);
     if (res.error) return;
@@ -930,7 +940,7 @@
     if (res.error){ toast('Suppression impossible.'); return; }
     delete employees[id];
     renderAdminEmployees();
-    toast('Employé supprimé.');
+    toast('Profil supprimé.');
   }
 
   // ======================= remplacement en cas d'absence =======================
@@ -1017,7 +1027,7 @@
     sb.channel('logs-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, function(){
         loadLogsFor(viewingEmployeeId());
-        if (session && session.is_admin) loadDashboardLogs();
+        if (session && (session.is_admin || TABLET_MODE)) loadDashboardLogs();
       })
       .subscribe();
     sb.channel('employees-changes')
@@ -1048,17 +1058,36 @@
     }
   });
 
+  // Déplier/replier le détail (tâche par tâche) d'un employé dans le
+  // tableau de bord Suivi / Gestion.
+  var dashDashboardListEl = document.getElementById('admin-dashboard-list');
+  if (dashDashboardListEl) dashDashboardListEl.addEventListener('click', function(e){
+    var row = e.target.closest('.dash-row');
+    if (!row) return;
+    var id = row.getAttribute('data-id');
+    if (!id) return;
+    dashExpanded[id] = !dashExpanded[id];
+    renderAdminDashboard();
+  });
+
   document.querySelectorAll('.tab').forEach(function(btn){
     btn.addEventListener('click', function(){
       var tab = btn.dataset.tab;
       if (tab === 'admin' && viewAsId){ exitViewAs(); }
       document.querySelectorAll('.tab').forEach(function(b){ b.classList.remove('active'); });
       btn.classList.add('active');
+      // Sur la tablette, l'onglet "Suivi" (tracker) affiche le tableau de bord
+      // de tout le monde (view-admin) au lieu du suivi d'habitudes personnel.
+      var showAdminView = tab === 'admin' || (tab === 'tracker' && TABLET_MODE);
+      var showTrackerView = tab === 'tracker' && !TABLET_MODE;
       document.getElementById('view-tasks').hidden = tab !== 'tasks';
-      document.getElementById('view-planning').hidden = tab !== 'planning';
-      document.getElementById('view-tracker').hidden = tab !== 'tracker';
-      document.getElementById('view-admin').hidden = tab !== 'admin';
-      if (tab === 'admin'){ renderAdminEmployees(); renderAdminTasks(); loadDashboardLogs(); }
+      var elPlanning = document.getElementById('view-planning'); if (elPlanning) elPlanning.hidden = tab !== 'planning';
+      var elTracker = document.getElementById('view-tracker'); if (elTracker) elTracker.hidden = !showTrackerView;
+      var elAdmin = document.getElementById('view-admin'); if (elAdmin) elAdmin.hidden = !showAdminView;
+      if (showAdminView){
+        loadDashboardLogs();
+        if (!TABLET_MODE){ renderAdminEmployees(); renderAdminTasks(); }
+      }
     });
   });
 
@@ -1201,15 +1230,39 @@
   var pendingDeleteEmp = null;
   var pendingDeleteMTask = null;
 
-  // Vue d'ensemble pour le patron : où en est chaque employé aujourd'hui,
-  // sans avoir à cliquer sur chacun (l'œil "Voir" reste disponible pour le détail).
+  // Ligne "lecture seule" d'une tâche pour le détail déplié d'un employé dans
+  // le tableau de bord (todayLogsAll, pas les logs de la session en cours —
+  // contrairement à taskRowHtml, qui lui est toujours centré sur la personne
+  // actuellement connectée).
+  function dashTaskRowHtml(t, ds, employeeId){
+    var entry = todayLogsAll[ds + '_' + t.id + '_' + employeeId];
+    var done = !!(entry && entry.done);
+    var blocked = !!(entry && entry.blocked);
+    var cls = 'task-row';
+    if (done) cls += ' done'; else if (blocked) cls += ' blocked';
+    return '<div class="'+cls+'">'
+      + '<div class="check"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>'
+      + '<div class="task-main"><span class="task-title">'+escapeHtml(t.title)+'</span>'
+      + (blocked ? '<span class="task-meta"><span class="tag tag-alert">empêchement signalé</span></span>' : '')
+      + '</div>'
+      + '<span class="task-time mono">'+t.time+'</span>'
+      + '</div>';
+  }
+
+  // Vue d'ensemble pour le patron (et, en mode tablette, pour tout le monde
+  // via l'onglet Suivi) : où en est chaque employé aujourd'hui. Chaque ligne
+  // est cliquable et se déplie pour montrer, tâche par tâche, ce qui a été
+  // fait ou pas (dashExpanded garde en mémoire qui est déplié).
   function renderAdminDashboard(){
     var box = document.getElementById('admin-dashboard-list');
     if (!box) return;
     var ds = dateKey();
     var now = new Date();
-    var list = Object.values(employees).filter(function(e){ return !e.is_admin; }).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
-    if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun employé pour l\'instant.</div>'; return; }
+    // Les administrateurs ont aussi leurs propres tâches (perso et/ou
+    // obligatoires), donc ils apparaissent dans l'aperçu du jour exactement
+    // comme les autres profils, avec leurs tâches faites/restantes.
+    var list = Object.values(employees).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
+    if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun profil pour l\'instant.</div>'; return; }
     box.innerHTML = list.map(function(e){
       var empTasks = employeeTasksFor(e.id).filter(function(t){ return isScheduled(t, now); });
       var done = 0, lateMandatory = false, blockedCount = 0;
@@ -1225,11 +1278,21 @@
       var dotCls = alert ? ' alert' : (total > 0 && done === total ? ' ok' : '');
       var subCls = alert ? ' alert-text' : '';
       var extra = blockedCount > 0 ? ' · ' + blockedCount + ' empêchement' + (blockedCount > 1 ? 's' : '') + ' signalé' + (blockedCount > 1 ? 's' : '') : (lateMandatory ? ' · obligatoire en retard' : '');
-      return '<div class="dash-row'+(alert?' alert':'')+'">'
+      var expanded = !!dashExpanded[e.id];
+      var rowHtml = '<div class="dash-row'+(alert?' alert':'')+'" data-id="'+e.id+'" data-action="toggle-dash" style="cursor:pointer;'+(expanded?'margin-bottom:10px;':'')+'">'
         + '<div class="dash-row-main"><div class="dash-row-name">'+escapeHtml(e.name)+'</div>'
         + '<div class="dash-row-sub'+subCls+'">'+done+'/'+total+' tâche'+(total===1?'':'s')+' aujourd\'hui'+extra+'</div></div>'
         + '<div class="dash-row-dot'+dotCls+'"></div>'
         + '</div>';
+      var detailHtml = '';
+      if (expanded){
+        detailHtml = empTasks.length === 0
+          ? '<div style="margin:-4px 0 20px;"><div class="empty-state">Aucune tâche aujourd\'hui.</div></div>'
+          : '<div style="display:flex;flex-direction:column;gap:8px;margin:-4px 0 20px;">'
+            + empTasks.map(function(t){ return dashTaskRowHtml(t, ds, e.id); }).join('')
+            + '</div>';
+      }
+      return rowHtml + detailHtml;
     }).join('');
   }
 
@@ -1239,7 +1302,7 @@
     var ds = dateKey();
     var now = new Date();
     var list = Object.values(employees).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
-    if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun employé pour l\'instant.</div>'; return; }
+    if (list.length === 0){ box.innerHTML = '<div class="empty-state">Aucun profil pour l\'instant.</div>'; return; }
     box.innerHTML = list.map(function(e){
       var confirm = pendingDeleteEmp === e.id;
       var isSelf = session && e.id === session.id;
@@ -1337,10 +1400,10 @@
     var absent = employees[absentId];
     document.getElementById('sub-absent-name').textContent = absent ? absent.name : '';
     var box = document.getElementById('sub-employee-picker');
-    var choices = Object.values(employees).filter(function(e){ return !e.is_admin && e.id !== absentId; }).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
+    var choices = Object.values(employees).filter(function(e){ return e.id !== absentId; }).sort(function(a,b){ return a.name.localeCompare(b.name,'fr'); });
     box.innerHTML = choices.map(function(e){
       return '<button type="button" class="mt-emp-chip" data-id="'+e.id+'">'+escapeHtml(e.name)+'</button>';
-    }).join('') || '<div class="empty-state">Aucun autre employé disponible.</div>';
+    }).join('') || '<div class="empty-state">Aucun autre profil disponible.</div>';
     sheetSub.classList.add('open'); sheetSubBackdrop.classList.add('open');
   }
   document.getElementById('sub-employee-picker').addEventListener('click', function(e){
@@ -1406,7 +1469,7 @@
     if (row) employees[row.id] = { id: row.id, name: row.name, is_admin: isAdmin };
     renderAdminEmployees();
     closeSheetEmp();
-    toast('Employé ajouté.');
+    toast('Profil ajouté.');
   });
 
   // --- créer une tâche obligatoire ---
@@ -1490,7 +1553,7 @@
     var title = document.getElementById('mt-title').value.trim();
     var time = document.getElementById('mt-time').value || '09:00';
     if (!title){ toast('Donne un nom à la tâche.'); return; }
-    if (mtSelectedEmployees.size === 0){ toast('Choisis au moins un employé.'); return; }
+    if (mtSelectedEmployees.size === 0){ toast('Choisis au moins un profil.'); return; }
     var recurrence;
     if (mtFreqMode === 'days'){
       if (mtSelectedDays.size === 0){ toast('Choisis au moins un jour.'); return; }
@@ -1581,14 +1644,14 @@
       return na.localeCompare(nb, 'fr');
     });
 
-    var lines = ['Date;Heure;Employe;Tache;Obligatoire;Fait;Empechement;Note'];
+    var lines = ['Date;Heure;Profil;Tache;Obligatoire;Fait;Empechement;Note'];
     rows.forEach(function(row){
       var t = tasks[row.task_id];
       var e = employees[row.employee_id];
       lines.push([
         row.date,
         t ? t.time : '',
-        csvField(e ? e.name : '(employé supprimé)'),
+        csvField(e ? e.name : '(profil supprimé)'),
         csvField(t ? t.title : '(tâche supprimée)'),
         t && t.isMandatory ? 'Oui' : 'Non',
         row.done ? 'Oui' : 'Non',
@@ -1597,7 +1660,7 @@
       ].join(';'));
     });
 
-    var csv = '﻿' + lines.join('\r\n');
+    var csv = '\ufeff' + lines.join('\r\n');
     var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
