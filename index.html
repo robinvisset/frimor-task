@@ -1,324 +1,361 @@
-// Code partagé entre les deux routes de programmation des notifications
-// (schedule-notifications.js, utilisée par le cron automatique du soir et
-// par le lien secret, et sync-notifications.js, appelée par le bouton
-// "Synchroniser les notifications" dans l'appli).
-//
-// Fichier préfixé par "_" : Vercel ne le traite pas comme une route, il ne
-// sert qu'en tant que module importé par les deux autres fichiers.
-//
-// Depuis l'ajout du multi-employés : chaque tâche appartient soit à un
-// employé (tâche personnelle, owner_employee_id), soit est "obligatoire"
-// (is_mandatory) et assignée à une liste d'employés via task_assignees.
-// Chaque notification est désormais envoyée UNIQUEMENT aux employés
-// concernés par la tâche, en ciblant directement leurs player_ids
-// OneSignal (et plus jamais tous les appareils abonnés).
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Frimor Task</title>
+<meta name="theme-color" content="#070707">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Task">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
-const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID;
-const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY;
-const REMINDER_LEAD_MIN = 20;
-// Délai après l'heure prévue d'une tâche OBLIGATOIRE avant d'alerter le
-// patron si elle n'est toujours pas faite (voir plus bas, "alerte patron").
-const OVERDUE_ALERT_DELAY_MIN = 45;
-const TIME_ZONE = 'Europe/Paris';
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+<script src="/config.js"></script>
+</head>
+<body>
 
-function timeZoneOffsetMinutes(date, timeZone) {
-  const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone, hourCycle: 'h23',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit'
-  });
-  const parts = Object.fromEntries(dtf.formatToParts(date).map(p => [p.type, p.value]));
-  const asUTC = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
-  return (asUTC - date.getTime()) / 60000;
-}
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-badge"><img src="/logo-mark.png" alt="Frimor"></div>
+    <div class="login-brand">
+      <span class="brand">FRIMOR</span>
+      <span class="product">TASK</span>
+    </div>
 
-function zonedWallTimeToUtc(y, m, d, hh, mm, timeZone) {
-  let guess = new Date(Date.UTC(y, m - 1, d, hh, mm, 0));
-  const offsetMin = timeZoneOffsetMinutes(guess, timeZone);
-  return new Date(guess.getTime() - offsetMin * 60000);
-}
+    <div id="login-names-step">
+      <div class="login-label">Qui es-tu ?</div>
+      <div id="login-names" class="login-names"></div>
+    </div>
 
-function parisTodayYMD(now) {
-  const dtf = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
-  const parts = Object.fromEntries(dtf.formatToParts(now).map(p => [p.type, p.value]));
-  return { y: +parts.year, m: +parts.month, d: +parts.day };
-}
+    <div id="login-pin-step" class="login-pin-step" hidden>
+      <div class="login-label">Code de <span id="login-pin-name"></span></div>
+      <div class="login-pin-dots" id="login-pin-dots">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="4" id="login-pin-input" class="login-pin-input" autocomplete="off">
+      <div class="login-error" id="login-error" hidden>Code incorrect, réessaie.</div>
+      <button type="button" class="btn btn-ghost" id="login-back">Retour</button>
+    </div>
+  </div>
+</div>
 
-function addDaysYMD(ymd, delta) {
-  const dt = new Date(Date.UTC(ymd.y, ymd.m - 1, ymd.d));
-  dt.setUTCDate(dt.getUTCDate() + delta);
-  return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
-}
+<div id="app">
+  <header>
+    <div class="badge"><img src="/logo-mark.png" alt="Frimor"></div>
+    <div class="wordmark">
+      <span class="brand">FRIMOR</span>
+      <span class="product">TASK</span>
+    </div>
+    <button class="user-chip" id="user-chip" hidden>
+      <span id="user-chip-name"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+    </button>
+    <div class="today-date" id="today-date"></div>
+  </header>
 
-function ymdToDs(ymd) {
-  return ymd.y + '-' + String(ymd.m).padStart(2, '0') + '-' + String(ymd.d).padStart(2, '0');
-}
+  <div id="view-as-banner" hidden>
+    <span id="view-as-text"></span>
+    <button type="button" id="view-as-exit">Quitter</button>
+  </div>
 
-function weekdayOf(ymd) {
-  return new Date(Date.UTC(ymd.y, ymd.m - 1, ymd.d)).getUTCDay();
-}
+  <div id="rail" hidden></div>
 
-function daysInMonthUTC(y, m) { return new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); } // m : 0-indexé
+  <div class="banner" id="pending-sync-banner" hidden>
+    <p id="pending-sync-text"></p>
+    <button type="button" id="pending-sync-retry">Réessayer</button>
+  </div>
 
-// Même logique que matchesPeriodic côté app.js (voir ce fichier pour le
-// détail) : `anchorDs` ("YYYY-MM-DD") revient tous les `everyNMonths` mois,
-// en retombant sur le dernier jour du mois si celui-ci est plus court que le
-// jour d'ancrage (ex. ancrage le 31, mois de 30 jours).
-function matchesPeriodicYMD(anchorDs, ymd, everyNMonths) {
-  if (!anchorDs) return false;
-  const [ay, am, ad] = anchorDs.split('-').map(Number);
-  const diffMonths = (ymd.y - ay) * 12 + (ymd.m - am);
-  if (diffMonths < 0 || diffMonths % everyNMonths !== 0) return false;
-  const lastDay = daysInMonthUTC(ymd.y, ymd.m - 1);
-  const targetDay = Math.min(ad, lastDay);
-  return ymd.d === targetDay;
-}
+  <main>
+    <section class="view" id="view-tasks">
+      <div class="banner" id="notif-banner" hidden>
+        <p>Active les rappels pour recevoir une notification 20 minutes avant chaque tâche, même téléphone verrouillé.</p>
+        <button id="notif-enable">Activer</button>
+      </div>
+      <div class="sync-row">
+        <button id="sync-notifs" class="sync-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+          Synchroniser les notifications
+        </button>
+      </div>
+      <div class="section-label">
+        <span>Aujourd'hui</span>
+        <span class="count" id="today-count">0/0</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="today-progress"></div></div>
+      <div id="task-list"></div>
+    </section>
 
-function isScheduled(task, weekday, ymd, ds) {
-  if (task.recurrence_type === 'days') return (task.recurrence_days || []).includes(weekday);
-  if (task.recurrence_type === 'date') return task.recurrence_date === ds;
-  if (task.recurrence_type === 'monthly') return matchesPeriodicYMD(task.recurrence_date, ymd, 1);
-  if (task.recurrence_type === 'quarterly') return matchesPeriodicYMD(task.recurrence_date, ymd, 3);
-  if (task.recurrence_type === 'annual') return matchesPeriodicYMD(task.recurrence_date, ymd, 12);
-  return true; // daily
-}
+    <section class="view" id="view-planning" hidden>
+      <div class="section-label">
+        <span>À venir</span>
+        <span class="count">14 prochains jours</span>
+      </div>
+      <div id="planning-list"></div>
+    </section>
 
-async function supabaseGet(path) {
-  const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, {
-    headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY }
-  });
-  if (!res.ok) throw new Error('Supabase GET ' + path + ' -> ' + res.status + ' ' + await res.text());
-  return res.json();
-}
+    <section class="view" id="view-tracker" hidden>
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-num mono" id="stat-streak">0</div>
+          <div class="stat-label">Jours à 100%</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num mono" id="stat-today">0%</div>
+          <div class="stat-label">Complété aujourd'hui</div>
+        </div>
+      </div>
+      <div class="section-label">
+        <span>Suivi d'habitudes</span>
+        <span class="count">14 derniers jours</span>
+      </div>
+      <div class="tracker" id="tracker"></div>
+      <div class="tracker-axis" id="tracker-axis"></div>
+      <div class="legend">
+        <div class="legend-item"><div class="cell done"></div>Fait</div>
+        <div class="legend-item"><div class="cell missed"></div>Manqué</div>
+        <div class="legend-item"><div class="cell na"></div>Non prévu</div>
+      </div>
+    </section>
 
-async function supabaseInsert(table, row) {
-  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
-    method: 'POST',
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: 'Bearer ' + SUPABASE_KEY,
-      'Content-Type': 'application/json',
-      Prefer: 'resolution=ignore-duplicates,return=minimal'
-    },
-    body: JSON.stringify(row)
-  });
-  // 201 = created, 409/ignore-duplicates = already scheduled: both fine
-  if (!res.ok && res.status !== 409) {
-    throw new Error('Supabase INSERT ' + table + ' -> ' + res.status + ' ' + await res.text());
-  }
-}
+    <section class="view" id="view-admin" hidden>
+      <div class="section-label">
+        <span>Frimor — vue d'ensemble</span>
+      </div>
+      <div id="admin-company-overview"></div>
 
-async function supabaseDelete(path) {
-  const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, {
-    method: 'DELETE',
-    headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY }
-  });
-  if (!res.ok) throw new Error('Supabase DELETE ' + path + ' -> ' + res.status + ' ' + await res.text());
-}
+      <div class="section-label admin-section-spaced">
+        <span>Aperçu du jour</span>
+      </div>
+      <div id="admin-dashboard-list"></div>
 
-// Envoie (ou programme) une notification à un ou plusieurs appareils précis,
-// identifiés par leurs OneSignal player_ids — jamais à "tous les abonnés".
-async function oneSignalSchedule(title, body, sendAfterUtc, playerIds) {
-  const res = await fetch('https://onesignal.com/api/v1/notifications', {
-    method: 'POST',
-    headers: {
-      Authorization: 'Basic ' + ONESIGNAL_REST_API_KEY,
-      'Content-Type': 'application/json; charset=utf-8'
-    },
-    body: JSON.stringify({
-      app_id: ONESIGNAL_APP_ID,
-      headings: { en: title, fr: title },
-      contents: { en: body, fr: body },
-      include_player_ids: playerIds,
-      send_after: sendAfterUtc.toUTCString()
-    })
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error('OneSignal -> ' + res.status + ' ' + JSON.stringify(data));
-  return data;
-}
+      <div class="section-label admin-section-spaced">
+        <span>Profils</span>
+      </div>
+      <div id="admin-employee-list"></div>
+      <button type="button" class="btn btn-ghost admin-add-btn" id="admin-add-employee">+ Ajouter un profil</button>
 
-// Annule une notification OneSignal programmée (pas encore envoyée). Si elle
-// a déjà été envoyée, OneSignal renvoie une erreur qu'on ignore simplement.
-async function oneSignalCancel(notificationId) {
-  try {
-    await fetch('https://onesignal.com/api/v1/notifications/' + notificationId + '?app_id=' + ONESIGNAL_APP_ID, {
-      method: 'DELETE',
-      headers: { Authorization: 'Basic ' + ONESIGNAL_REST_API_KEY }
-    });
-  } catch (e) {}
-}
+      <div class="section-label admin-section-spaced">
+        <span>Tâches obligatoires</span>
+      </div>
+      <div id="admin-task-list"></div>
+      <button type="button" class="btn btn-ghost admin-add-btn" id="admin-add-task">+ Nouvelle tâche obligatoire</button>
 
-// Pour une tâche donnée, renvoie la liste des id employés qui doivent être
-// notifiés : les employés assignés pour une tâche obligatoire, ou le seul
-// propriétaire pour une tâche personnelle.
-function recipientsForTask(task, assigneesByTask) {
-  if (task.is_mandatory) {
-    return assigneesByTask[task.id] || [];
-  }
-  return task.owner_employee_id ? [task.owner_employee_id] : [];
-}
+      <div class="section-label admin-section-spaced">
+        <span>Historique</span>
+      </div>
+      <div class="export-row">
+        <button type="button" id="export-history" class="sync-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-5 5 5 5-5M5 19h14"/></svg>
+          Exporter le mois (CSV)
+        </button>
+      </div>
+    </section>
+  </main>
 
-// Regarde les tâches dans Supabase, et pour chacune qui doit sonner
-// aujourd'hui ou demain, demande à OneSignal d'envoyer — à chaque employé
-// concerné, et uniquement à lui — une notification programmée 20 minutes
-// avant l'heure de la tâche. Idempotent : une paire (tâche, employé, date)
-// déjà programmée n'est jamais reprogrammée deux fois.
-async function runScheduling() {
-  if (!SUPABASE_URL || !SUPABASE_KEY || !ONESIGNAL_APP_ID || !ONESIGNAL_REST_API_KEY) {
-    return { error: 'missing_env', detail: 'Vérifie les variables d\'environnement Vercel.' };
-  }
+  <nav id="tabbar">
+    <button class="tab active" data-tab="tasks">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+      Tâches
+    </button>
+    <button class="tab" data-tab="planning">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+      Planning
+    </button>
+    <button class="tab" data-tab="tracker">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="4" height="9"/><rect x="10" y="6" width="4" height="14"/><rect x="17" y="3" width="4" height="17"/></svg>
+      Suivi
+    </button>
+    <button class="tab" data-tab="admin" id="tab-admin" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Gestion
+    </button>
+  </nav>
 
-  const [employees, tasks, assigneeRows] = await Promise.all([
-    supabaseGet('employees?select=id,player_ids,is_admin'),
-    supabaseGet('tasks?select=id,title,time,recurrence_type,recurrence_days,recurrence_date,owner_employee_id,is_mandatory'),
-    supabaseGet('task_assignees?select=task_id,employee_id')
-  ]);
+  <button id="fab" aria-label="Ajouter une tâche">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
 
-  const employeeById = {};
-  for (const e of employees) employeeById[e.id] = e;
+  <div id="sheet-backdrop"></div>
+  <div id="sheet">
+    <h2 id="sheet-title">Nouvelle tâche</h2>
+    <div class="field">
+      <label for="f-title">Nom de la tâche</label>
+      <input type="text" id="f-title" placeholder="Ex. Relevé des températures" maxlength="60">
+    </div>
+    <div class="field">
+      <label for="f-time">Heure</label>
+      <input type="time" id="f-time" value="09:00">
+    </div>
+    <div class="field">
+      <label>Fréquence</label>
+      <div class="seg" id="freq-seg">
+        <button type="button" class="seg-btn active" data-freq="daily">Tous les jours</button>
+        <button type="button" class="seg-btn" data-freq="days">Jours choisis</button>
+        <button type="button" class="seg-btn" data-freq="date">Date précise</button>
+        <button type="button" class="seg-btn" data-freq="monthly">Mensuelle</button>
+        <button type="button" class="seg-btn" data-freq="quarterly">Trimestrielle</button>
+        <button type="button" class="seg-btn" data-freq="annual">Annuelle</button>
+      </div>
+      <div class="day-picker" id="day-picker" hidden>
+        <button type="button" class="day-chip" data-day="1">LUN</button>
+        <button type="button" class="day-chip" data-day="2">MAR</button>
+        <button type="button" class="day-chip" data-day="3">MER</button>
+        <button type="button" class="day-chip" data-day="4">JEU</button>
+        <button type="button" class="day-chip" data-day="5">VEN</button>
+        <button type="button" class="day-chip" data-day="6">SAM</button>
+        <button type="button" class="day-chip" data-day="0">DIM</button>
+      </div>
+      <div class="field date-field" id="date-picker" hidden>
+        <label for="f-date">Date</label>
+        <input type="date" id="f-date">
+        <p class="date-field-hint" id="date-hint"></p>
+      </div>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="f-cancel">Annuler</button>
+      <button class="btn btn-primary" id="f-save">Ajouter</button>
+    </div>
+  </div>
 
-  // Appareils des patrons (is_admin), pour les alertes "tâche obligatoire
-  // pas encore faite" — jamais ceux des employés.
-  const adminPlayerIds = Array.from(new Set(
-    employees.filter(e => e.is_admin).flatMap(e => e.player_ids || [])
-  ));
+  <div id="sheet-employee-backdrop"></div>
+  <div id="sheet-employee">
+    <h2>Nouveau profil</h2>
+    <div class="field">
+      <label for="emp-name">Nom</label>
+      <input type="text" id="emp-name" placeholder="Prénom Nom" maxlength="40">
+    </div>
+    <div class="field">
+      <label for="emp-pin">Code à 4 chiffres</label>
+      <input type="tel" inputmode="numeric" maxlength="4" id="emp-pin" placeholder="1234">
+    </div>
+    <div class="field">
+      <label>Rôle</label>
+      <div class="role-seg" id="emp-role-seg">
+        <button type="button" class="active" data-role="user">Utilisateur</button>
+        <button type="button" data-role="admin">Administrateur</button>
+      </div>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="emp-cancel">Annuler</button>
+      <button class="btn btn-primary" id="emp-save">Ajouter</button>
+    </div>
+  </div>
 
-  const assigneesByTask = {};
-  for (const row of assigneeRows) {
-    if (!assigneesByTask[row.task_id]) assigneesByTask[row.task_id] = [];
-    assigneesByTask[row.task_id].push(row.employee_id);
-  }
+  <div id="sheet-substitute-backdrop"></div>
+  <div id="sheet-substitute">
+    <h2>Remplacement (absence)</h2>
+    <p class="sheet-sub-text">Les tâches de <b id="sub-absent-name"></b> seront prises en charge par la personne choisie ci-dessous, jusqu'à ce que tu cliques sur « Terminer le remplacement ».</p>
+    <div id="sub-employee-picker" class="mt-employee-picker"></div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="sub-cancel">Annuler</button>
+      <button class="btn btn-primary" id="sub-save">Confirmer</button>
+    </div>
+  </div>
 
-  const now = new Date();
-  const todayYMD = parisTodayYMD(now);
-  const tomorrowYMD = addDaysYMD(todayYMD, 1);
-  const dsToday = ymdToDs(todayYMD);
-  const dsTomorrow = ymdToDs(tomorrowYMD);
+  <div id="sheet-mtask-backdrop"></div>
+  <div id="sheet-mtask">
+    <h2 id="mt-sheet-title">Tâche obligatoire</h2>
+    <div class="field">
+      <label for="mt-title">Nom de la tâche</label>
+      <input type="text" id="mt-title" placeholder="Ex. Relevé des températures" maxlength="60">
+    </div>
+    <div class="field">
+      <label for="mt-time">Heure</label>
+      <input type="time" id="mt-time" value="09:00">
+    </div>
+    <div class="field">
+      <label>Fréquence</label>
+      <div class="seg" id="mt-freq-seg">
+        <button type="button" class="seg-btn active" data-freq="daily">Tous les jours</button>
+        <button type="button" class="seg-btn" data-freq="days">Jours choisis</button>
+        <button type="button" class="seg-btn" data-freq="date">Date précise</button>
+        <button type="button" class="seg-btn" data-freq="monthly">Mensuelle</button>
+        <button type="button" class="seg-btn" data-freq="quarterly">Trimestrielle</button>
+        <button type="button" class="seg-btn" data-freq="annual">Annuelle</button>
+      </div>
+      <div class="day-picker" id="mt-day-picker" hidden>
+        <button type="button" class="day-chip" data-day="1">LUN</button>
+        <button type="button" class="day-chip" data-day="2">MAR</button>
+        <button type="button" class="day-chip" data-day="3">MER</button>
+        <button type="button" class="day-chip" data-day="4">JEU</button>
+        <button type="button" class="day-chip" data-day="5">VEN</button>
+        <button type="button" class="day-chip" data-day="6">SAM</button>
+        <button type="button" class="day-chip" data-day="0">DIM</button>
+      </div>
+      <div class="field date-field" id="mt-date-picker" hidden>
+        <label for="mt-date">Date</label>
+        <input type="date" id="mt-date">
+        <p class="date-field-hint" id="mt-date-hint"></p>
+      </div>
+    </div>
+    <div class="field">
+      <label>Qui est concerné ?</label>
+      <button type="button" class="btn btn-ghost mt-select-all" id="mt-select-all">Tout le monde</button>
+      <div id="mt-employee-picker" class="mt-employee-picker"></div>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="mt-cancel">Annuler</button>
+      <button class="btn btn-primary" id="mt-save">Créer</button>
+    </div>
+  </div>
 
-  // Une seule requête pour connaître tout ce qui est déjà programmé sur ces
-  // deux jours, plutôt qu'une requête par (tâche, employé) — évite de
-  // multiplier les appels Supabase quand il y a plusieurs employés.
-  const [already, alreadyOverdue] = await Promise.all([
-    supabaseGet('scheduled_notifications?select=id&date=in.(' + dsToday + ',' + dsTomorrow + ')'),
-    supabaseGet('overdue_alerts?select=id&date=in.(' + dsToday + ',' + dsTomorrow + ')')
-  ]);
-  const scheduledSet = new Set(already.map(r => r.id));
-  const overdueSet = new Set(alreadyOverdue.map(r => r.id));
+  <div id="sheet-note-backdrop"></div>
+  <div id="sheet-note">
+    <h2 id="note-title">Note</h2>
+    <div class="field">
+      <label for="note-text">Note (optionnel)</label>
+      <textarea id="note-text" maxlength="300" placeholder="Ex. Chambre 2 en panne, relevé impossible..."></textarea>
+    </div>
+    <button type="button" class="note-blocked-btn" id="note-blocked-btn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+      Signaler un empêchement
+    </button>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="note-cancel">Annuler</button>
+      <button class="btn btn-primary" id="note-save">Enregistrer</button>
+    </div>
+  </div>
 
-  let scheduled = 0, skipped = 0;
-  const errors = [];
-  const details = []; // debug temporaire : infos OneSignal par notification créée
+  <div id="sheet-account-backdrop"></div>
+  <div id="sheet-account">
+    <h2>Mon compte</h2>
+    <p class="sheet-sub-text" id="account-name-text"></p>
+    <div class="field">
+      <label for="account-new-pin">Nouveau code à 4 chiffres</label>
+      <input type="tel" inputmode="numeric" maxlength="4" id="account-new-pin" placeholder="1234" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="account-new-pin-confirm">Confirme le nouveau code</label>
+      <input type="tel" inputmode="numeric" maxlength="4" id="account-new-pin-confirm" placeholder="1234" autocomplete="off">
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="account-cancel">Annuler</button>
+      <button class="btn btn-primary" id="account-save-pin">Enregistrer</button>
+    </div>
+    <button type="button" class="btn btn-ghost account-logout-btn" id="account-logout">Se déconnecter</button>
+  </div>
 
-  for (const ymd of [todayYMD, tomorrowYMD]) {
-    const ds = ymdToDs(ymd);
-    const weekday = weekdayOf(ymd);
-    for (const task of tasks) {
-      if (!isScheduled(task, weekday, ymd, ds)) continue;
-      const [hh, mm] = task.time.split(':').map(Number);
-      const taskUtc = zonedWallTimeToUtc(ymd.y, ymd.m, ymd.d, hh, mm, TIME_ZONE);
-      const sendAt = new Date(taskUtc.getTime() - REMINDER_LEAD_MIN * 60000);
-      const recipients = recipientsForTask(task, assigneesByTask);
+  <div id="toast"></div>
+</div>
 
-      if (sendAt.getTime() > now.getTime() + 60000) { // pas encore passé
-        for (const employeeId of recipients) {
-          const employee = employeeById[employeeId];
-          const playerIds = (employee && employee.player_ids) || [];
-          if (!playerIds.length) { skipped++; continue; } // pas encore d'appareil connu pour cet employé
+<div id="splash">
+  <div class="splash-badge"><img src="/logo-mark.png" alt=""></div>
+  <div class="splash-brand">
+    <span class="brand">FRIMOR</span>
+    <span class="product">TASK</span>
+  </div>
+  <div class="bar-track"><div class="bar-fill" id="splash-bar"></div></div>
+  <div class="splash-pct mono" id="splash-pct">0%</div>
+</div>
 
-          const id = ds + '_' + task.id + '_' + employeeId;
-          if (scheduledSet.has(id)) { skipped++; continue; }
-
-          try {
-            const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — dans ' + REMINDER_LEAD_MIN + ' min', sendAt, playerIds);
-            await supabaseInsert('scheduled_notifications', { id, task_id: task.id, date: ds, employee_id: employeeId, onesignal_id: osResult.id });
-            scheduledSet.add(id);
-            scheduled++;
-            details.push({ task: task.title, employeeId, date: ds, sendAt: sendAt.toISOString(), oneSignalId: osResult.id, recipients: osResult.recipients, errorsFromOS: osResult.errors });
-          } catch (e) {
-            errors.push({ task: task.title, employeeId, date: ds, error: String(e.message || e) });
-          }
-        }
-      } else {
-        skipped++;
-      }
-
-      // Alerte au patron si une tâche OBLIGATOIRE n'est toujours pas faite
-      // OVERDUE_ALERT_DELAY_MIN minutes après son heure prévue. Une seule
-      // alerte par (tâche, jour) — annulée automatiquement si tout le monde
-      // a fini avant l'envoi (voir cancelOverdueAlertIfComplete, appelée par
-      // l'appli dès qu'un employé coche une tâche obligatoire).
-      if (task.is_mandatory && recipients.length && adminPlayerIds.length) {
-        const overdueId = ds + '_' + task.id;
-        const overdueSendAt = new Date(taskUtc.getTime() + OVERDUE_ALERT_DELAY_MIN * 60000);
-        if (!overdueSet.has(overdueId) && overdueSendAt.getTime() > now.getTime() + 60000) {
-          try {
-            const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — Rappel', overdueSendAt, adminPlayerIds);
-            await supabaseInsert('overdue_alerts', { id: overdueId, task_id: task.id, date: ds, onesignal_id: osResult.id });
-            overdueSet.add(overdueId);
-            scheduled++;
-          } catch (e) {
-            errors.push({ task: task.title, overdue: true, date: ds, error: String(e.message || e) });
-          }
-        }
-      }
-    }
-  }
-
-  return { ok: true, scheduled, skipped, errors, details, ranAt: now.toISOString() };
-}
-
-// Appelée par l'appli dès qu'un employé coche une tâche obligatoire comme
-// faite. Si TOUS les employés concernés par cette tâche l'ont faite
-// aujourd'hui, annule l'alerte "pas encore faite" programmée pour le patron
-// (si elle existe encore) pour éviter une fausse alerte.
-async function cancelOverdueAlertIfComplete(taskId, ds) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return { ok: false, error: 'missing_env' };
-
-  const alertRows = await supabaseGet('overdue_alerts?select=id,onesignal_id&id=eq.' + encodeURIComponent(ds + '_' + taskId));
-  if (!alertRows.length) return { ok: true, skipped: true }; // rien de programmé, rien à faire
-
-  const assigneeRows = await supabaseGet('task_assignees?select=employee_id&task_id=eq.' + encodeURIComponent(taskId));
-  const assigneeIds = assigneeRows.map(r => r.employee_id);
-  if (!assigneeIds.length) return { ok: true, skipped: true };
-
-  const logRows = await supabaseGet('logs?select=employee_id,done&date=eq.' + encodeURIComponent(ds) + '&task_id=eq.' + encodeURIComponent(taskId));
-  const doneByEmployee = {};
-  logRows.forEach(r => { doneByEmployee[r.employee_id] = !!r.done; });
-  const allDone = assigneeIds.every(id => doneByEmployee[id]);
-  if (!allDone) return { ok: true, allDone: false };
-
-  const alert = alertRows[0];
-  if (alert.onesignal_id) await oneSignalCancel(alert.onesignal_id);
-  await supabaseDelete('overdue_alerts?id=eq.' + encodeURIComponent(alert.id));
-  return { ok: true, cancelled: true };
-}
-
-// Appelée par l'appli dès qu'une tâche est supprimée (par un employé pour
-// ses tâches perso, ou par le patron pour une tâche obligatoire). Annule
-// immédiatement tout rappel déjà programmé chez OneSignal pour cette tâche
-// (aujourd'hui et demain), au lieu d'attendre qu'il parte "pour rien".
-async function cancelNotificationsForTask(taskId) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return { ok: false, error: 'missing_env' };
-
-  const [scheduledRows, overdueRows] = await Promise.all([
-    supabaseGet('scheduled_notifications?select=id,onesignal_id&task_id=eq.' + encodeURIComponent(taskId)),
-    supabaseGet('overdue_alerts?select=id,onesignal_id&task_id=eq.' + encodeURIComponent(taskId))
-  ]);
-
-  let cancelled = 0;
-  for (const row of scheduledRows) {
-    if (row.onesignal_id) { await oneSignalCancel(row.onesignal_id); cancelled++; }
-    await supabaseDelete('scheduled_notifications?id=eq.' + encodeURIComponent(row.id));
-  }
-  for (const row of overdueRows) {
-    if (row.onesignal_id) { await oneSignalCancel(row.onesignal_id); cancelled++; }
-    await supabaseDelete('overdue_alerts?id=eq.' + encodeURIComponent(row.id));
-  }
-
-  return { ok: true, cancelled };
-}
-
-module.exports = { runScheduling, cancelOverdueAlertIfComplete, cancelNotificationsForTask };
+<script src="/app.js"></script>
+</body>
+</html>
