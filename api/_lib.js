@@ -255,7 +255,7 @@ async function runScheduling() {
         const overdueSendAt = new Date(taskUtc.getTime() + OVERDUE_ALERT_DELAY_MIN * 60000);
         if (!overdueSet.has(overdueId) && overdueSendAt.getTime() > now.getTime() + 60000) {
           try {
-            const osResult = await oneSignalSchedule('Frimor Task', '⚠️ ' + task.title + ' (obligatoire) — Rappel', overdueSendAt, adminPlayerIds);
+            const osResult = await oneSignalSchedule('Frimor Task', task.title + ' — Rappel', overdueSendAt, adminPlayerIds);
             await supabaseInsert('overdue_alerts', { id: overdueId, task_id: task.id, date: ds, onesignal_id: osResult.id });
             overdueSet.add(overdueId);
             scheduled++;
